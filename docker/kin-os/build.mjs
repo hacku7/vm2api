@@ -15,6 +15,7 @@ const force = args.includes('--force')
 const pullOnly = args.includes('--pull-only')
 const pull = pullOnly || args.includes('--pull')
 const only = args.filter((a) => !a.startsWith('--'))
+const PULL_TIMEOUT_MS = Number(process.env.KIN_OS_PULL_TIMEOUT_MS) || 120_000
 
 function imageExists(tag) {
   return spawnSync('docker', ['image', 'inspect', tag], { stdio: 'ignore' }).status === 0
@@ -23,7 +24,9 @@ function imageExists(tag) {
 for (const [kernel, meta] of Object.entries(OS_CATALOG)) {
   if (only.length && !only.some((arg) => kernel.includes(arg) || meta.dir.includes(arg) || meta.family === arg)) continue
   // Tags are mutable: --pull refreshes an existing image so guest fixes reach cached hosts.
-  if (pull && spawnSync('docker', ['pull', meta.image], { stdio: 'inherit' }).status === 0) continue
+  // Bounded: an unreachable registry (e.g. ghcr from mainland China) must not block
+  // startup forever when a cached image is already present.
+  if (pull && spawnSync('docker', ['pull', meta.image], { stdio: 'inherit', timeout: PULL_TIMEOUT_MS }).status === 0) continue
   if (!force && imageExists(meta.image)) {
     console.log(`vm2api: keep existing ${meta.image}`)
     continue
