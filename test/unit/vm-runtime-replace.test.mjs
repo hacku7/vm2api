@@ -167,15 +167,22 @@ test('crash-looping kvm runner is replaced and recreated on reload even on the r
 
 test('ensureSlotImage refreshes a cached tag and falls back to it when the registry is unreachable', () => {
   const calls = []
-  const registry = (pullOk) => (argv) => {
+  const timeouts = []
+  const registry = (pullOk, cached = true) => (argv, opts) => {
     calls.push(argv.slice(0, 3).join(' '))
-    return { ok: argv[1] === 'pull' ? pullOk : true }
+    if (argv[1] === 'pull') timeouts.push(opts?.timeout)
+    return { ok: argv[1] === 'pull' ? pullOk : cached }
   }
   assert.equal(ensureSlotImage('debian-12', { runtime: 'kvm', run: registry(true) }).action, 'pulled')
-  assert.deepEqual(calls, ['docker pull ghcr.io/dofastted/kin-kvm-debian:12'])
+  assert.deepEqual(calls, ['docker image inspect', 'docker pull ghcr.io/dofastted/kin-kvm-debian:12'])
   calls.length = 0
   assert.equal(ensureSlotImage('debian-12', { runtime: 'kvm', run: registry(false) }).action, 'present')
-  assert.deepEqual(calls, ['docker pull ghcr.io/dofastted/kin-kvm-debian:12', 'docker image inspect'])
+  assert.deepEqual(calls, ['docker image inspect', 'docker pull ghcr.io/dofastted/kin-kvm-debian:12'])
+  // A cached tag gets a short refresh window; only a missing image waits the full 5 minutes.
+  assert.deepEqual(timeouts, [20_000, 20_000])
+  timeouts.length = 0
+  ensureSlotImage('debian-12', { runtime: 'kvm', run: registry(true, false) })
+  assert.deepEqual(timeouts, [300_000])
 })
 
 test('unbound slot does not recreate for a missing desired network', (t) => {

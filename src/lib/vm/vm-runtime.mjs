@@ -72,12 +72,16 @@ export function timezoneForIndex(i) {
  * Runner tags are mutable: re-pull before creating a container so runner fixes reach
  * hosts that cached an older tag. Unreachable registry falls back to the local image,
  * then to the in-repo Dockerfile.
+ * A cached tag only gets a short refresh window (KIN_SLOT_IMAGE_PULL_TIMEOUT_MS, default
+ * 20s): a slow registry (ghcr from mainland China) must not hold a slot recreate for minutes.
  */
 export function ensureSlotImage(kernel, { run = sh, projectRoot, runtime } = {}) {
   const kvm = runtime === 'kvm' || runtime === RUNTIME_KVM
   const image = kvm ? kvmImageForKernel(kernel) : imageForKernel(kernel)
-  if (run(['docker', 'pull', image], { timeout: 300_000 }).ok) return { ok: true, action: 'pulled', image }
-  if (run(['docker', 'image', 'inspect', image], { timeout: 10_000 }).ok) return { ok: true, action: 'present', image }
+  const cached = run(['docker', 'image', 'inspect', image], { timeout: 10_000 }).ok
+  const pullTimeout = cached ? Number(process.env.KIN_SLOT_IMAGE_PULL_TIMEOUT_MS) || 20_000 : 300_000
+  if (run(['docker', 'pull', image], { timeout: pullTimeout }).ok) return { ok: true, action: 'pulled', image }
+  if (cached) return { ok: true, action: 'present', image }
   if (kvm) {
     const dir = path.join(projectRoot || MODULE_ROOT, KVM_BUILD_DIR)
     if (!fs.existsSync(path.join(dir, 'Dockerfile'))) {
