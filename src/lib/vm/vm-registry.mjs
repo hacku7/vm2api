@@ -89,6 +89,8 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
     runtime_type: runtimeKind(vm),
     machine: vm.machine || null,
     inference_engine: vm.inference_engine || null,
+    // wrap-cli sync reads summaries: without this a failed kernel restart is never retried or cleared.
+    kernel_restart_pending: vm.kernel_restart_pending || null,
     persona_preset: vm.persona_preset || null,
     seed_policy: vm.seed_policy || null,
     region: vm.region || vm.zone || null,
