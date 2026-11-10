@@ -192,13 +192,8 @@ export function canonicalizeClaudeMessagesShape(body, { preserveContentShape = f
   return out
 }
 
-export function sanitizeAnthropicBody(body, { strictPassthrough = false, preserveContentShape = false } = {}) {
+export function sanitizeAnthropicBody(body, { preserveContentShape = false } = {}) {
   if (!body || typeof body !== 'object') return body
-  if (strictPassthrough) {
-    const out = { ...body }
-    normalizeStop(out)
-    return out
-  }
 
   const out = copyOfficialAnthropicFields(body)
   applyStructuredOutput(out, body)
@@ -385,7 +380,7 @@ function modelSupportsPerMessageEffort(modelId = '') {
     .trim()
     .toLowerCase()
     .replace(/\[1m\]$/i, '')
-  return /^claude-(?:(?:fable|mythos)-5[-.]1|opus-5(?:[-.]5)?|(?:sonnet|haiku)-5[-.]5)(?:-|$)/.test(id)
+  return /^claude-(?:(?:fable|mythos)-5[-.](?:1|2)|opus-5(?:[-.]5)?|(?:sonnet|haiku)-5[-.]5)(?:-|$)/.test(id)
 }
 
 function applyLiftedEffort(body, effort) {

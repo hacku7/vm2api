@@ -7,8 +7,11 @@
  */
 
 import { THINKING_DISPLAY_MODES } from '../protocol/thinking.mjs'
+import { normalizeRedaction } from '../redaction/policy.mjs'
+import { redactionStatus } from '../redaction/runtime.mjs'
 import { readSlotProcessStatus } from '../vm/slot-process-status.mjs'
 import os from 'node:os'
+import { usagePoolEnabled, usageRead } from '../db/sqlite-pool.mjs'
 import path from 'node:path'
 import {
   listVms,
@@ -17,18 +20,21 @@ import {
   getActiveVmId,
   vmHasClaudeCredential,
   persistAccountTier,
+  persistVmSubscription,
   isCodexVm,
   migrateVmSchedule,
 } from '../vm/vm-registry.mjs'
 import { clearRecoverableVmCooldown, markVmRefreshError } from '../oauth/oauth-credentials.mjs'
 import {
   resolveInferenceEngine,
+  resolveCragKernelVersion,
   resolveKernelDataplane,
   normalizeSessionSlots,
   normalizeSessionIdleTtlSeconds,
   resolveSessionSlots,
   resolveSlotPersonaPreset,
 } from '../vm/slot-engine.mjs'
+import { resolveCragPrintPersona } from '../protocol/crag-print-prompt.mjs'
 import { probeAccount } from '../oauth/usage-probe.mjs'
 import { queryOpenaiQuota, resetOpenaiQuota } from '../oauth/openai-quota.mjs'
 import { queryClaudeResetCredits, redeemClaudeResetCredit } from '../oauth/claude-reset-credits.mjs'
@@ -36,6 +42,7 @@ import { canOfficialUsage, credentialModeOfVm, isSetupTokenMode } from '../oauth
 import { getUsageCache } from '../oauth/usage-cache.mjs'
 import { makeError, ErrorType, ErrorCode } from '../core/errors.mjs'
 import { filterVmsForPanel } from './resource-owner.mjs'
+import { nodePlatform } from '../cluster/placement.mjs'
 import { computeWeeklySplit, publicWeeklySplit, weeklySplitConfig } from '../pool/weekly-split.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 import { pickScheduleFields } from '../pool/schedule-state.mjs'
@@ -431,6 +438,12 @@ export function validatePersonaRoutingPatch(body = {}) {
       problems.push(`persona_preset 必须是 ${PERSONA_PRESETS.join(' / ')}，收到 ${raw}`)
     }
   }
+  if (compat.crag_persona_preset != null && String(compat.crag_persona_preset).trim() !== '') {
+    const raw = String(compat.crag_persona_preset).trim()
+    if (raw !== 'official_full' && raw !== 'zero') {
+      problems.push(`crag_persona_preset 必须是 official_full / zero，收到 ${raw}`)
+    }
+  }
   if (compat.overlay_preset != null && String(compat.overlay_preset).trim() !== '') {
     const raw = String(compat.overlay_preset).trim()
     if (!OVERLAY_PRESETS.includes(raw)) {
@@ -682,6 +695,34 @@ export async function buildDashboard({
     })(),
   )
 
+  let dbTotals = null
+  let opsWindow = null
+  const opsSince = new Date(Date.now() - 3600_000).toISOString()
+  if (usagePoolEnabled()) {
+    try {
+      ;[dbTotals, opsWindow] = await Promise.all([
+        usageRead({ kind: 'repo', method: 'totals' }),
+        usageRead({ kind: 'repo', method: 'windowStats', args: [{ since: opsSince }] }),
+      ])
+    } catch (err) {
+      console.warn(`[sqlite-pool] dashboard: ${err?.message || err}`)
+    }
+  }
+  if (!dbTotals) {
+    try {
+      dbTotals = requestLog?.totals() || null
+    } catch {
+      dbTotals = null
+    }
+  }
+  if (!opsWindow) {
+    try {
+      opsWindow = requestLog?.windowStats?.({ since: opsSince }) || null
+    } catch {
+      opsWindow = null
+    }
+  }
+
   return ok({
     health: {
       status: 'ok',
@@ -731,22 +772,9 @@ export async function buildDashboard({
     },
     gateway_stats: stats,
     // historic totals straight from the request_logs table (survives restarts)
-    db_totals: (() => {
-      try {
-        return requestLog?.totals() || null
-      } catch {
-        return null
-      }
-    })(),
+    db_totals: dbTotals,
     billing,
-    // last-hour ops cards (SLA / QPS / TTFT) — console can refetch other windows via /request-logs/stats
-    ops: (() => {
-      try {
-        return requestLog?.windowStats?.({ since: new Date(Date.now() - 3600_000).toISOString() }) || null
-      } catch {
-        return null
-      }
-    })(),
+    ops: opsWindow,
   })
 }
 
@@ -1206,6 +1234,12 @@ export async function buildProbeOne({
     } catch {}
   }
   if (!skipHop) accountQuota.ingestOAuthUsage(accountId, result)
+  if (result.subscription_type) {
+    persistVmSubscription(cfg.paths.project, id, result, {
+      accountUuid: vm.claude?.account_uuid,
+      orgUuid: vm.claude?.org_uuid,
+    })
+  }
   if (isSetupTokenMode(credentialModeOfVm(vm)) && (force || includeFable) && !result.usage_scope_missing) {
     try {
       await applyFableProbeResult(accountQuota, accountId, await fableProbe({ exec, timeoutMs: 20000 }))
@@ -1266,6 +1300,9 @@ export async function buildProbeOne({
   })
   const data = {
     vm_id: id,
+    subscription_type: result.subscription_type || vm.claude?.subscription_type || null,
+    rate_limit_tier: result.subscription_type ? result.rate_limit_tier : vm.claude?.rate_limit_tier || null,
+    subscription_error: result.subscription_error || null,
     account_uuid: vm.claude?.account_uuid || null,
     source: passive?.source || result.source,
     via: passive?.via || result.via || null,
@@ -1493,6 +1530,8 @@ export function buildRouting({ routingConfig, stickyRouter }) {
     notify: publicNotifyConfig(routingConfig?.notify),
     vm: normalizeVmConfig(routingConfig?.vm),
     telemetry: { upload_interval_seconds: telemetryUploadInterval(routingConfig) },
+    redaction: normalizeRedaction(routingConfig?.redaction),
+    redaction_runtime: redactionStatus(),
     sessions: stickyRouter.stats(),
   })
 }
@@ -1958,10 +1997,14 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     dataplane: v.dataplane || null,
     resolved_inference_engine: resolveInferenceEngine(v, extras.routingConfig || {}),
     resolved_persona_preset: resolveSlotPersonaPreset(v, extras.routingConfig || {}),
+    resolved_crag_print_persona: isCodex ? null : resolveCragPrintPersona(v, extras.routingConfig || {}),
     resolved_dataplane: resolveKernelDataplane(v, extras.routingConfig || {}),
+    crag_kernel_version: v.crag_kernel_version || null,
+    resolved_crag_kernel_version: isCodex ? null : resolveCragKernelVersion(v, extras.routingConfig || {}),
     note: v.note || null,
     region: v.region || null,
     node_id: v.node_id || null,
+    node_platform: v.node_id ? nodePlatform(v.node_id) : null,
     owner_user_id: v.owner_user_id || null,
     origin: v.origin || null,
     ...(canRevealClusterNodes(extras.role || 'admin') && v.node_id
@@ -2067,6 +2110,8 @@ function enrichVm(v, accountQuota, active, extras = {}) {
         }
       : null,
     account_tier: tierKey,
+    subscription_type: isCodex ? null : v.subscription_type || null,
+    rate_limit_tier: isCodex ? null : v.rate_limit_tier || null,
     usage_has_fable: isCodex ? null : q.usage_has_fable,
     availability,
     cred_status: credStatusFromAvailability(availability),

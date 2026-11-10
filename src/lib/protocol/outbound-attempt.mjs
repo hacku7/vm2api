@@ -6,9 +6,9 @@ import { officialMessagesBody } from './anthropic-messages.mjs'
 import {
   prepareAnthropicRequest,
   rewriteToolNames,
+  scrubUpstreamClientBody,
   sanitizeAnthropicBodyForBetaTokens,
   ensureFastModeBeta,
-  ensureClearThinkingContextManagement,
   stripInvalidThinkingBlocks,
   alignSamplingWithThinking,
   modelSupportsMidConversationSystem,
@@ -56,6 +56,7 @@ import { apiKeyBetaHeader, setupTokenBetaHeader } from './claude-code-betas.mjs'
 
 import { isApiKeyMode, isAnySetupTokenMode } from '../oauth/credential-mode.mjs'
 import { prepareClassifierBody } from './request-purpose.mjs'
+import { validateBetweenToolsThinking } from './model-policy.mjs'
 import { applyEagerToolStreaming } from './eager-tool-streaming.mjs'
 
 export const INFERENCE_UA = 'kin-inference/1.0'
@@ -326,6 +327,7 @@ export function prepareCliHopBody(
   } = {},
 ) {
   if (requestContext?.purpose === 'auto_mode_classifier') return prepareClassifierBody(canonicalBody, { stream })
+  validateBetweenToolsThinking(canonicalBody)
   // official_303 lean: renderOfficial303Body owns system, role=system placement and markers.
   const lean = outboundShape === 'lean' && !requestContext
   if (preserveSystem) validateCacheBreakpoints(canonicalBody)
@@ -411,6 +413,27 @@ export function prepareCliHopBody(
         // existing prefix TTLs intact and only shorten our new message markers.
         const ttl = markers.some((marker) => marker.ttl !== '1h') ? '5m' : cacheTtl
         body.messages = officialMessageMarker(body.messages, ttl, Math.min(2, available))
+      }
+      // These CLI presets always stamp both system boundaries, including one
+      // Node may have unmarked while preserving interpolated caller anchors.
+      // Budget the final wire shape, retaining the newest message anchors.
+      if (personaPreset === 'official' || personaPreset === 'official_full') {
+        const markers = listCacheMarkers(body)
+        const prefixCount = markers.filter((marker) => marker.section !== 'messages').length
+        const messages = markers.filter((marker) => marker.section === 'messages')
+        const excess = messages.length - Math.max(0, 4 - Math.max(2, prefixCount))
+        if (excess > 0) {
+          const drop = new Set(messages.slice(0, excess).map((marker) => `${marker.index}:${marker.blockIndex}`))
+          body.messages = body.messages.map((message, index) => {
+            if (!Array.isArray(message?.content)) return message
+            const content = message.content.map((block, blockIndex) => {
+              if (!drop.has(`${index}:${blockIndex}`)) return block
+              const { cache_control, ...rest } = block
+              return rest
+            })
+            return { ...message, content }
+          })
+        }
       }
     }
   }
@@ -505,8 +528,17 @@ export function prepareOutboundAttempt({
   cleaned = stripIllegalCacheControlFields(cleaned)
   if (cacheTtl) cleaned = applyCacheTtlToBody(cleaned, cacheTtl)
   cleaned = enforceCacheTtlOrder(cleaned)
-  const tools = rewriteToolNames(cleaned, { enabled: toolNameRewrite !== false })
-  return { body: tools.body, toolNames: tools.reverse }
+  const scrubbed = scrubUpstreamClientBody(cleaned, {
+    official: !unofficial,
+    rewriteTools: toolNameRewrite !== false,
+  })
+  const tools = rewriteToolNames(scrubbed.body, { enabled: toolNameRewrite !== false })
+  const toolNames = {}
+  for (const [wire, mid] of Object.entries(tools.reverse)) {
+    const client = scrubbed.reverse[mid] || mid
+    if (client !== wire) toolNames[wire] = client
+  }
+  return { body: tools.body, toolNames }
 }
 
 export function prepareOutboundHeaders(reqHeaders, homeDir, identity, model, { credentialMode, want1m } = {}) {

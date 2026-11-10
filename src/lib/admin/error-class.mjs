@@ -3,7 +3,7 @@
  * Derived from status / error_code / message so historical rows classify without a migration.
  */
 
-import { isUsagePolicyErrorMessage } from '../core/errors.mjs'
+import { isUnanswerablePromptMessage } from '../core/errors.mjs'
 
 export const ERROR_CLASSES = {
   auth: { id: 'auth', owner: 'client', label: '认证' },
@@ -30,6 +30,7 @@ const CODE_MAP = {
   api_key_expired: 'auth',
   key_group_mismatch: 'request',
   vm_pool_unavailable: 'request',
+  api_key_model_not_allowed: 'request',
   claude_code_only: 'request',
   invalid_json: 'request',
   body_too_large: 'request',
@@ -128,6 +129,7 @@ export const SLA_OK_ERROR_CODES = new Set([
   'policy_blocked',
   'key_group_mismatch',
   'vm_pool_unavailable',
+  'api_key_model_not_allowed',
   'claude_code_only',
   // Pool queue full / timeout moved from 429 to 529; SLA keeps counting them as it did at 429.
   'pool_overloaded',
@@ -244,7 +246,7 @@ export function classifyRequestError(row = {}) {
   if (
     id !== 'auth' &&
     id !== 'credential' &&
-    isUsagePolicyErrorMessage(row?.error_message) &&
+    isUnanswerablePromptMessage(row?.error_message) &&
     !isOauthCredentialFailure(row, text, code)
   ) {
     id = 'refusal'

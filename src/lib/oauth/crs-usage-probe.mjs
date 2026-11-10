@@ -14,7 +14,7 @@ import {
 } from './usage-interpret.mjs'
 
 /** Current Max model first; the previous id is only a fallback when this one is missing. */
-export const FABLE_TIER_MODELS = Object.freeze(['claude-fable-5-1', 'claude-fable-5'])
+export const FABLE_TIER_MODELS = Object.freeze(['claude-fable-5-2', 'claude-fable-5-1', 'claude-fable-5'])
 export const FABLE_PROBE_MODEL = FABLE_TIER_MODELS[0]
 export const OAUTH_USAGE_PATH = '/api/oauth/usage'
 /** sub2api Extra / Messages 响应头被动采样，不打 GET /api/oauth/usage。 */
@@ -135,7 +135,9 @@ export function parseOAuthUsage(data = {}) {
 
 export function isCompleteOAuthUsage(data = {}, parsed = null) {
   const p = parsed || parseOAuthUsage(data)
-  if (!p.five_hour || !p.seven_day) return false
+  // Official usage can omit the session window while retaining weekly limits.
+  // Keep an absent window unknown; a supplied but unreadable window is invalid.
+  if (!p.seven_day || (!p.five_hour && data.five_hour != null)) return false
   if (p.usage_has_fable !== null) return true
   // 2.1.293 GET /api/oauth/usage is a Utilization object: named windows, no limits[] catalog.
   if (

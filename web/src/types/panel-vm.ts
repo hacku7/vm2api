@@ -70,6 +70,35 @@ export type VmProxySnap = {
 
 export type InferenceEngine = 'auto' | 'go' | 'rust'
 
+export type CragLicenseStatus = {
+  status:
+    | 'unlicensed'
+    | 'valid'
+    | 'expired'
+    | 'not_yet_valid'
+    | 'invalid'
+    | 'unconfigured'
+  valid: boolean
+  vm_id: string
+  /** offline: CRAGU1 universal code. online: device-bound CRAGL1. */
+  kind?: 'offline' | 'online'
+  /** kernel: one offline code covers every slot and machine. device: one VM. */
+  scope?: 'kernel' | 'device'
+  license_id?: string
+  term?: '1m' | '6m' | '1y'
+  /** Signed UTC epoch seconds, not browser-local timestamps. */
+  issued_at?: number
+  not_before?: number
+  expires_at?: number
+  code?: string
+  message?: string
+}
+
+export type CragLicenseResponse = {
+  license: CragLicenseStatus
+  machine_code: string
+}
+
 export type VmTelemetryState = {
   enabled: boolean
   state:
@@ -216,8 +245,10 @@ export type Vm = {
   id: string
   name?: string
   owner_user_id?: string | null
-  /** 所在集群节点；null / 缺省 = 本机。远端槽位不支持官方初装、wrap-cli、换内核等。 */
+  /** 所在集群节点；null / 缺省 = 本机。 */
   node_id?: string | null
+  /** linux Docker 节点可切 CRAG；darwin 是 macOS 原生槽，不能切。 */
+  node_platform?: 'linux' | 'darwin' | null
   /** Admin-only cluster node label for `node_id`. Tenants never receive this. */
   node_name?: string | null
   origin?: string | null
@@ -333,7 +364,10 @@ export type Vm = {
   fable?: Record<string, unknown>
   weekly_split?: Record<string, unknown>
   account_tier?: string
-  /** Complete official usage: true = Max, false = Pro, null = unconfirmed. */
+  /** Official OAuth subscription metadata, independent of model availability. */
+  subscription_type?: string | null
+  rate_limit_tier?: string | null
+  /** Whether official usage lists a Fable window; not a subscription identifier. */
   usage_has_fable?: boolean | null
   /** anthropic | openai。缺省按 Claude 槽展示。 */
   platform?: string | null
@@ -344,8 +378,12 @@ export type Vm = {
   resolved_inference_engine?: 'go' | 'rust' | null
   persona_preset?: string | null
   resolved_persona_preset?: string | null
+  /** CRAG v2 print only: official_full appends the caller tail; zero replaces. */
+  resolved_crag_print_persona?: 'official_full' | 'zero' | null
   dataplane?: 'wrap' | 'cc' | 'crag' | null
   resolved_dataplane?: 'wrap' | 'cc' | 'crag' | null
+  crag_kernel_version?: 'legacy' | 'v2' | null
+  resolved_crag_kernel_version?: 'legacy' | 'v2' | null
   kernel?: string
   /** docker | kvm。缺省按 docker 展示。 */
   runtime_type?: RuntimeType | null
@@ -718,6 +756,8 @@ export type OfficialCcStatus = {
   hello_ok?: boolean
   usage_ok?: boolean
   account_tier?: string
+  subscription_type?: string | null
+  rate_limit_tier?: string | null
   /** `profile` = 官方 /api/oauth/profile；`usage` = /usage 推断兜底。 */
   account_tier_source?: string
   /** 槽内 GET /v1/models 返回的模型 id。 */

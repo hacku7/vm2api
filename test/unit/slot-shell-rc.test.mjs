@@ -10,10 +10,12 @@ import {
   createLiveLoginAdoption,
   createSlotShell,
   panelShellLaunch,
+  terminalClaudeBin,
   syncShellLoginCredentials,
 } from '../../src/lib/vm/slot-shell.mjs'
 import { FULL_OAUTH_SCOPE } from '../../src/lib/oauth/oauth-contract.mjs'
 import { OFFICIAL_CLI_VERSION } from '../../src/lib/identity/vm-identity.mjs'
+import { CONTAINER_CLI_NODE_BIN, LOCAL_CRAG_CLAUDE, REMOTE_CRAG_CLAUDE } from '../../src/lib/vm/slot-engine.mjs'
 import {
   ensureOfficialCredentialLink,
   readWorkerCredentialFile,
@@ -61,7 +63,36 @@ test('claude in the panel shell runs cli-node and points config at .claude', () 
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test('official login starts claude only when the panel login marker is set', () => {
+test('a CRAG v2 terminal runs the package claude instead of cli-node', () => {
+  assert.equal(terminalClaudeBin({ id: 'vm-local', dataplane: 'crag', crag_kernel_version: 'v2' }), LOCAL_CRAG_CLAUDE)
+  assert.equal(
+    terminalClaudeBin({ id: 'vm-remote', node_id: 'node-a', dataplane: 'crag', crag_kernel_version: 'v2' }),
+    REMOTE_CRAG_CLAUDE,
+  )
+  assert.equal(terminalClaudeBin({ id: 'vm-wrap', dataplane: 'wrap' }), CONTAINER_CLI_NODE_BIN)
+  assert.equal(
+    terminalClaudeBin({ id: 'vm-kvm', dataplane: 'crag', crag_kernel_version: 'v2', runtime: { type: 'kvm' } }),
+    CONTAINER_CLI_NODE_BIN,
+  )
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slot-shell-crag-'))
+  const binDir = path.join(dir, 'crag-v2')
+  const bin = path.join(binDir, 'claude')
+  fs.mkdirSync(binDir)
+  fs.writeFileSync(bin, '#!/bin/sh\necho "crag-claude $*"\n', { mode: 0o755 })
+  const { rc } = panelShellLaunch(bin)
+  const rcPath = path.join(dir, 'rc')
+  fs.writeFileSync(rcPath, `${rc}\n`)
+  const ran = spawnSync('bash', ['--rcfile', rcPath, '-ic', 'claude --flag'], {
+    encoding: 'utf8',
+    env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH}`, KIN_PANEL_RCFILE: rcPath },
+  })
+  assert.equal(ran.status, 0, ran.stderr)
+  assert.match(ran.stdout, /crag-claude --flag/)
+  assert.doesNotMatch(rc, /cli-node/)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('official login starts claude auth login only when the panel login marker is set', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slot-shell-login-'))
   const bin = path.join(dir, 'cli-node')
   fs.writeFileSync(bin, '#!/bin/sh\necho "cli-node $*"\n', { mode: 0o755 })
@@ -79,8 +110,8 @@ test('official login starts claude only when the panel login marker is set', () 
   assert.equal(plain.status, 0, plain.stderr)
   assert.doesNotMatch(plain.stdout, /cli-node/)
   assert.equal(login.status, 0, login.stderr)
-  assert.match(login.stdout, /cli-node\s*$/m)
-  assert.doesNotMatch(login.stdout, /auth login/)
+  assert.match(login.stdout, /cli-node auth login\s*$/m)
+  assert.doesNotMatch(plain.stdout, /auth login/)
   fs.rmSync(dir, { recursive: true, force: true })
 })
 

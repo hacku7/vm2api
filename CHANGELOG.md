@@ -1,8 +1,271 @@
 # Changelog
 
 ## Unreleased
+
+## 1.4.061 — 2026-11-10
+
+- 升级同步二进制时不再先删除正在使用的文件。cli-node、内核和 CRAG 都是改名覆盖；已经挂载的目录保持原 inode。旧的 `claude-code-*` 目录先留着，槽位切到新路径之前仍能执行。写入失败会把原来的目录内容放回去。
+
+已部署机升级：更新 Node 控制面后重启。不必为了这次修复 `docker rm` 槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.060 — 2026-11-10
+
+- Claude 订阅档从 OAuth 的订阅元数据和官方 `/api/oauth/profile` 识别，不再用 Fable 是否可用、用量窗口或旧调度档推断。面板保留 `subscription_type` 和 `rate_limit_tier`，有数据时显示 Max 5x/20x，没有就保持未识别。调度策略和 Codex 档不变。
+
+已部署机升级：更新 Node 控制面后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。不要 `docker rm` 槽。
+
+## 1.4.059 — 2026-11-10
+
+- Codex 模型 `codex-auto-review` 默认改写成 `gpt-6-luna`。
+
+已部署机升级：更新 Node 控制面后重启。这是默认 `routing.json`。已经部署的机器不要覆盖本机 `routing.json`；要这条别名就在本机配置里加同样的 `model_mappings`。
+
+## 1.4.058 — 2026-11-10
+
+- CRAG v2 默认官方 Claude 改为 2.1.321（2026-11-09）。包成员、槽内路径和安装校验都是 `claude-code-2.1.321/claude`。已经发出的 2.1.317 归档不改写。
+- 面板和 cli-node 的默认出站版本改为 2.1.321。`cli` 用交互身份、`cc_turn_origin=human`、`cc_prompt_index=1`、`thinking.display=updates` 和 `thinking-display-updates` beta。`sdk-cli` 用 Agent SDK 身份、`cc_turn_origin=sdk`、`cc_prompt_index=0`、`thinking.display=omitted`，不加那条 beta。两边都带 `tool-provenance-2026-10-26`、`x-claude-code-sandy-plover: []`，Node 运行时 `v26.12.1`。目录加入 `claude-fable-5-2`（输入 $8 / 输出 $40 / 缓存读 $0.20，默认 effort medium）；短名 `fable` 指向它。
+- CRAG v2 槽的 health 会带上凭证是否可用（不含密钥）。创建槽时写入的 API key 不再因为 worker 没回报 `credential` 被判成 `oauth_unconfirmed`，密钥可以选中这些 VM。
+- 本机 Docker 切到 CRAG v2 时，只要宿主启用了 AppArmor 就带 `apparmor=unconfined` 并在缺它时重建容器。docker-default 会拒绝 `/proc/self` 的 uid_map 写入和 bind mount，guest identity 因此得到 `Permission denied (os error 13)`，而不是以前的 seccomp `os error 1`。
+- 内核页可以在本机 Docker、集群槽和 KVM 上重装 cli-node 或 CRAG，完成后保持停用。macOS 原生节点仍然不行。拉取旁边的「更新全部槽位」把刚拉取的内核装到每一台 Claude 槽。集群字节写到 `slot-bin`，哈希相同的文件不重传，`crag-kernel` 只覆盖不先删。cli-node 的新容器命令改为 `/opt/kin-live/kin-kernel`。
+- 集群部署更新和内核切换不再调用 `chmod -h` / `chown -h`。coreutils 8.32 之前和 BusyBox 会报 `chmod: invalid option -- 'h'` 并中断切换。私有目录改用 `find -P`，符号链接不跟随，匹配不到就失败。
+- `crag_model` 只发给 health capabilities 含 `linux_tui_pty` 或 `model_directive` 的 worker。集群 hop / 旧内核会把该字段原样打到 Anthropic，得到 `crag_model: Extra inputs are not permitted` / `upstream_invalid_request`。没有这个能力时，部署、切换和出站都丢掉 `crag_model` 与 `crag_prompt`。
+- 最终出站：cli-node 与 CRAG 都经 `kin_outbound_headers` 回传 fetch 前的真实请求头。CRAG 另带回请求体，只保留前 10000 token（CJK 一字一 token，ASCII 四字一 token），凭证在离开 CLI 前打码。没有回传体时，日志里的出站体仍是发给 worker 的信封。
+- 集群 Docker 槽的 VM 面板可以在 cli-node 与 CRAG v2 之间切换。KVM 和 macOS 原生节点仍然不能切。切换会按该槽自己的内核重建容器，不再把未选择 CRAG 的集群槽写回 v2。
+- 出站按 VM 实际启用的内核切换：只有运行中的 CRAG v2（health `runtime_variant`，否则槽位自己的 `dataplane` / `crag_kernel_version`，再否则该槽 `kernel.json`）走 print。`crag_model` 还要该 worker 的 capabilities 声明会在本地消化。全局 `routing.inference=crag` 不再把 wrap / cc / 未写内核的槽送上 print。cli-node 信封会丢掉调用方塞进来的 `crag_prompt`。
+
+已部署机升级：更新 Node 控制面后重启。CRAG 要换成 2.1.321 时先在内核页拉取新包。不必 `wrap-cli/sync`。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。不要 `docker rm` 槽。
+
+## 1.4.057 — 2026-11-10
+
+- 集群 Linux Docker 槽切换 CRAG 时认本机已经激活的同一张离线码，不再因为没有本槽机器身份而停在未配置。内核页只拦截 KVM 和 macOS，不再把 Linux 集群槽的 CRAG 选项禁用。
+- 面板终端的 `claude` 跟随本槽内核。切到 CRAG v2 后执行包内原生 `claude-code-2.1.317/claude`，不再启动 `cli-node`。
+- #937：Anthropic Messages `type=image` + `source`（base64/url）在转 Codex Responses 时不再被静默丢弃，顺序与 OpenAI `image_url` 路径兼容。
+
+已部署机升级：更新 Node 控制面后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。不要 `docker rm` 槽。
+
+## 1.4.056 — 2026-11-09
+
+- 集群 Linux Docker 槽可以激活并安装 CRAG v2。原生 Claude Code（`claude-code-2.1.317/claude`）随 CRAG 包一起推到节点，不再要求本机槽。KVM 和 macOS 原生节点仍然不行。
+
+已部署机升级：更新 Node 控制面后重启。不必 `wrap-cli/sync`，不必换 payload。集群镜像要包含 CRAG 时，先在内核页拉取 CRAG 包。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。不要 `docker rm` 槽。
+
+## 1.4.055 — 2026-11-09
+
+- 集群节点不再对槽内可替换的 `run/crag-native-assets`、`run/work`、`run/crag-license` 做会跟随符号链接的 `chmod`/`chown`。链接只删链接本身，模式和属主用 `-h` 或已打开的目录 fd。
+- 集群 Docker 槽的 VM 面板可以在 cli-node 与 CRAG v2 之间切换。KVM 和 macOS 原生节点仍然不能切。切换会按该槽自己的内核重建容器，不再把未选择 CRAG 的集群槽写回 v2。
+- 集群槽位镜像同时烤入 kin-kernel 与已校验的 amd64 CRAG v2。已在跑、镜像本身不用换的旧容器，经 slot-bin 挂载补上同一棵树，不必为了补 CRAG 重建容器。
+- 出站按 VM 实际启用的内核切换：只有运行中的 CRAG v2（health `runtime_variant`，否则槽位自己的 `dataplane` / `crag_kernel_version`，再否则该槽 `kernel.json`）走 print 和 `crag_model`。全局 `routing.inference=crag` 不再把 wrap / cc / 未写内核的槽送上 print。cli-node 信封会丢掉调用方塞进来的 `crag_prompt`。
+- system提示词页分成两套：cli-node 原生内核仍用模板并投影 `kernel.json`；CRAG v2 print 另存 `compatibility.crag_persona_preset`。print worker 不读 `persona_preset` / `CLAUDE_CODE_SYSTEM_LAYOUT`。`official_full` 只 append 调用方尾巴，不重贴官方四块；`zero` 必须 `crag_prompt.mode=replace`，超过 64 KiB 返回 400。不使用 `--bare`、`--tools ""` 或 `--no-chrome`。thinking、temperature、betas 和 system 上的 cache_control 仍不转发。
+- CRAG 离线通用码 `CRAGU1` 一次解锁内核：写入安装级授权并同步到每个本地槽和每台集群机器，Warp 上不再逐槽、逐机器重复激活。在线 `CRAGL1` 仍绑定单槽设备，且不会被通用码覆盖。正式状态为 `kind: offline`、`scope: kernel`。
+- 清理：删除零引用死导出（cache-ttl / convert / model-policy / thinking / user-count-tokens / web-search / codex-route / codex-models）及 `copyBodyWithMessages`（REQ-CLEANUP-02 第一批 / DEC-0001）。
+- 测试模型和内核说明按实际搭配显示：cli-node + wrap kernel、cc-node + wrap kernel、cc-node + CRAG kernel、CRAG v2 原生 worker。CRAG v2 不再标成 cli-hop。
+- 修复集群槽位镜像准备：存在 wrap-cli 内核缓存包时，cc-node 回退到出厂 `share/wrap-cli/`，不再误报缺失。
+- 内核页收敛为默认免费 cli-node 与注册码授权 CRAG：精简母本/旧 ELF/cc-node 入口，逐 VM 选择安装、就地激活/续期，全局确认明确范围，显示逐槽进度和停止结果。
+- 新增两产品独立拉取与可信缓存发布：cli-node 只下载所需的一对二进制；CRAG 校验官方签名加密归档并固定原发行公钥，缺少授权附件时明确失败，不回退 legacy。缓存指针原子切换，损坏时拒绝使用。
+- 新增显式范围重装并停用接口：授权/包校验先于停止，停止先于替换，保留身份与数据，关闭自动重启且不隐式开机；恢复流程只在完整成功时解除安装器自己的异常安全暂停。后续原生启动按需补齐窄 seccomp 策略，正确配置的容器不重建。
+- 修复 VM 摘要丢失 `dataplane` / `crag_kernel_version`：详情、dashboard 与重装选择保留每槽固定值，不再把已启用 CRAG V2 的槽误判为全局默认 wrap。
+- CRAG 在线设备绑定注册码：选择/使用前验证，支持签发 1个月/半年/1年；签名绑定 VM、machine-id 和独立设备密钥。新增机器码复制、激活/替换及绝对 UTC 到期提示；错误码不破坏现有有效授权，续期不隐式切内核；与通用离线码 `CRAGU1` 并存，互不替代。
+- 原生 V2 仅接收签名加密包：校验 bootstrap ELF、密文、公钥与发布签名，不再接受旧明文 V2。内核独立校验授权，过期/错误设备/篡改为终态403，不触发OAuth刷新、账号冷却或Go回退；cli-node/wrap不受收费授权限制。
+- 授权设备存储复用既有 Linux worker run 映射，普通重建保留授权，不将私钥写入 DrvFS。不可变包信任采用有界元数据缓存，避免每次请求重复哈希大型 Claude；注册码当前有效期仍逐次检查。
+- CRAG V2 发布协议切换到原生 ELF（`runtime: native`、`entrypoint: crag-v2`）：验证实际架构、完整 SHA 成员与安全路径，原子物化并直接执行，不再复制 Node 或写出 `node_bin` / `crag_v2_root`。保留 legacy 版本选择和 Linux Docker 放置限制；真实 CLI 版本由 native worker 探测。
+- native V2 生命周期探测、停止、切换回收和 idle reload 识别新进程名；动态 runnable 上限不再被误算为占用任务。配置写入本身不触发额外热重载，沿用显式空闲重启流程。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启。从 1.4.053 升级会在启动时执行迁移 054（`api_keys.allowed_models`）。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。不要 `docker rm` 槽。
+
+## 1.4.054 — 2026-11-09
+
+- Key 级模型白名单 `api_keys.allowed_models`：模型映射前按客户端模型名判断，忽略 `[1m]` 后缀；空数组表示允许全部；面板可配置；迁移 `054_api_keys_allowed_models.sql`。[#913](https://github.com/dofastted/vm2api/pull/913)
+- 槽位完整页可改创建时的自定义名称。VM 编号仍是创建时的编号，改名称不换编号、不重启槽。
+- 性能（REQ-PERF-BODY-01 L1）：请求级写时复制壳与消息身份哈希 memo；`cache-prefix` / 配额风险估计 / 拦截在续聊时复用已确认会话的历史记录，仅对新增尾部做快照与全文抽取；同请求内多路径共享消息哈希。
+- CRAG 支持离线通用注册码 `CRAGU1`：激活与存储不绑定本槽设备；面板/API 授权状态区分 `kind: 'online' | 'offline'`，与既有按 VM、machine-id 与设备密钥签名的在线码并存。激活失败不破坏已有效授权。
+- 修复 native CRAG v2 槽启动与沙箱：启动前写入 `.claude.json` 完成 onboarding 与工作目录信任，避免 TUI 阻塞；保证 `/run/kin` 下 `work`/`crag-native-assets` 目录存在且归槽 UID；v2 树物化目录权限 `0755` 以便槽用户 exec。Docker 槽加 `--init`，避免内核在容器 PID 1 下握手失败；在 `unprivileged_userns_apparmor_policy=1` 时可选 `apparmor=unconfined`；`nativeSlotSandboxNeedsRecreate` 在 init/AppArmor 漂移时要求重建容器。
+- 性能：`routing.json` 热路径统一经 `readFileVerifiedCached` / `readJsonParsedCached` 读盘并复用稳定内容的解析结果；`applyCrsUnofficialPersona` 单次调用只解析一次。同源字节在元数据未变时仍每次读盘校验，保持 scp/面板「下一请求生效」语义；逐调用方错误回落不变。 [#925](https://github.com/dofastted/vm2api/issues/925)（REQ-0925）
+- Infrastructure: PR/main `ci` 对仅改 `README.md`、`CHANGELOG.md`、`docs/**`、`VERSION` 的变更走 docs-lite（format/syntax；跳过 unit/go/web、native 打包单测与 `arm64-native-cli`）；业务 PR 仍跑满门，且 `test:unit`、Go 与 web 并行以缩短墙钟（REQ-CI-1.4）。
+- README：功能说明与快速开始对齐 1.4.053，新增 Telegram 开发者交流群（`@VM2API`）。
+
+已部署机升级：更新 Node 控制面与 `web/dist`，并执行迁移 054（`api_keys.allowed_models`）后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.053 — 2026-11-08
+
+- 修复 Codex `/v1/alpha/search`：1.4.049 接入脱敏时删掉了 `turnMetadata` 声明，选到可用账号后、请求发往上游前抛出 `ReferenceError`。关闭脱敏或补上 `x-codex-turn-metadata` 都绕不过。补回该头的读取。
+- 面板官方登录改为执行 `claude auth login`，不再只打开空的 `claude`。登录框加大；终端在容器有尺寸后再 fit，避免打开时被压成一条。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.052 — 2026-11-07
+
+- 决策模型关按地址管理多组 URL 和 Key，不再切换 Jev / Laya / ModernBERT。默认示例仍是 TypeSafe。每把 Key 显示最近状态；可一键测试可用性与判断基准，并检查地址是否提供剩余额度。官方 TypeSafe 没有余额接口时如实说明，不会为查余额去打 systemone。
+- 用户页可查看和修改用户并发。整数 0–1000，`0` 为不限；不改原有的并发拦截。
+- 托管 Key 可自助查询 `GET /v1/me/quota` 与 `GET /v1/me/usage`。`/v1/usage` 仍是上游账号窗口。
+- 面板按角色拦住无权页面，头像菜单同步隐藏这些入口。直接打开网址不再进入管理员页。
+- CLI 官方转发为两个系统缓存断点预留预算，避免合法的 4 个断点被补成 5 个后被上游拒绝。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.051 — 2026-11-07
+
+- 租户统计页补上今日和历史用量明细：请求、失败、费用、总 Token、输入、输出、缓存写入（含 5 分钟和 1 小时）、缓存读取、命中率、平均响应、平均 TTFT。历史可切 7 天、30 天、本月。
+- 租户可按自己的可用 VM 逐台看用量，没有请求的槽也列出。平台池槽只进合计，不显示名字。
+- 租户虚拟机只可查看：侧栏去掉代理，重新授权、导入凭证和刷新凭证关闭，对应接口返回 403。开机、测试和查看统计保留。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.050 — 2026-11-06
+
+- 设置新增「脱敏」页（`/settings/redaction`）。协议页不再放这组开关。可配凭据、个人信息类别、自定义词及是否忽略大小写、前缀或 RE2 规则、放行名单。默认关闭。
+- 没有安装 `kin-redact` 时不能保存为开启，请求不会回落明文。本机 `bin/kin-redact` 存在时直接使用，不必另设环境变量。保留密钥格式、本地模型和按类型拦截仍不启用。
+
+已部署机升级：更新 Node 控制面与 `web/dist`，并放入 `bin/kin-redact` 后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.049 — 2026-11-06
+
+- 协议页新增内容脱敏，默认关闭。开启后，出站正文在内容变换之后、CCH 密封之前替换秘密、个人信息与自定义词，响应在回到客户端前还原。helper 缺失、规则无法编译，或签名 thinking 命中时拒绝发送，不回落明文。同一 block 同一字段上被拆开的标签可以还原。
+- 控制面镜像带上 `kin-redact`，只监听本机 Unix socket。不更换 kernel、CLI 或 payload。
+
+已部署机升级：拉取新的控制面镜像后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.048 — 2026-11-06
+
+- #909：API 直连推理出站前剥离内部 persona 模板的非法缓存控制字段（如 scope），防止 Anthropic 官方上游返回 400（Extra inputs are not permitted）。
+- #908：官方 API 端点自动接入完整官方协议模型目录，并在调度时动态匹配协议模型，无需手动逐一录入。
+- #907：修复 API 直连密钥模型目录与协议调度绑定：
+  - 生成/编辑 API 直连密钥（`category: 'api'`）时，分组选择 `anthropic` 或 `openai` 不再强制校验 VM，移除前端阻塞与后端 `key_vms_required` 限制；
+  - `/v1/models` 与 `/models` 按密钥协议作用域过滤 API 端点模型，`anthropic` 密钥仅返回 Anthropic 端点模型，`openai` 密钥仅返回 OpenAI 端点模型；
+  - `ApiScheduler.pick` 按请求密钥协议过滤候选端点，避免跨协议错误调度；
+  - API 配置页保留已有端点模型状态，端点更新时同步携带最新模型。
+- #904：graceful-shutdown drain 超时定时器去掉 `unref`，修复孤立单测在 event loop 提前结束时被误杀的 CI flake（#376/#904）。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+## 1.4.047 — 2026-11-06
+
+- #905：追加 OpenAI 最新图像模型 `gpt-image-2.6-flare`（上游默认）与 `gpt-image-2.6-sunburst`，接入 `/v1/models`、`/v1/images/*`、Responses `image_generation` 工具及 Chat/Responses 图像桥接，内置单价与用量计费同步更新。
+- #902：集群页支持冷迁移 KVM 槽位并扩容内存，支持跨主机快速迁移。
+
+已部署机升级：只更新 Node 控制面后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.046 — 2026-11-06
+
+- #376：控制面平滑停机与排空（Graceful Draining）：收到 SIGTERM/SIGINT 时停止接入新请求，`/health` 与 `/healthz` 立即返回 503 `shutting_down` 通知上游反代/负载均衡安全摘流；等待在途长文本推理流自然排空（默认超时 25s，支持 `KIN_SHUTDOWN_DRAIN_TIMEOUT_MS`），避免升级或重启切断活跃会话导致客户端收到 `UND_ERR_SOCKET`。
+- #852：推理槽位假死显式感知与连续超时熔断：
+  - 诊断显式感知：槽位健康检查若发现存在异常闭合槽位时上报 `warn`（`kernel_degraded`），全部闭合时上报 `error`（`kernel_slots_closed`），彻底消除假死诊断盲区；
+  - 看门狗全闭合重启：`rustKernelNeedsRestart` 识别 `ready_slots === 0 && closed_slots > 0` 触发重启，不再无限期当作 busy；
+  - VM 级连续超时熔断：引入 `vmTimeoutTracker`，单台 VM 连续 3 次静默无首帧超时（504 / `worker_timeout`）立即标记 `kernelFaults` 熔断，阻止持续调度与级联超时。
+
+已部署机升级：只更新 Node 控制面后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.045 — 2026-11-05
+
+- #896：claude_code_only 完整替代 #892+#893：放行 CLI WebSearch/WebFetch 侧查询（缺 `claude-code-20250219` 的窄形状仍保留其余官方指纹检查）；Desktop Gateway 登录探针本地回 OK（零用量、不选账号）；中转准入不再仅凭计费行放行（须合法 `metadata.user_id` + 可识别的官方 Claude Code system）；拒 OMP 18.x（认出 `You are omp's trusted coding assistant`）。
+- #900（取代 #899）：槽位 credential ensure 非致命失败（生产 400 + `credential_ensure_failed`）按席位故障换槽并冷却 10 分钟，不再误判为 `invalid_request`；fatal 升级（401 + oauth 码，仍带 `credential_ensure_failed`）继续走永久 `oauth_revoked`，不被 10 分钟冷却截断。
+- `scripts/fetch-payload.mjs` 从 Release 下载 payload 资产遇瞬时失败时会重试（最多 4 次，递增退避），减轻 CI/本地构建偶发网络错误。
+
+已部署机升级：只更新 Node 控制面后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.044 — 2026-11-05
+
+- #890：修复本地转发代理的 lazy CONNECT 误判：SOCKS 成功但隧道没有应用层响应时不再标记健康。探测先要求经隧道完成 TLS 握手，TLS 不可用时回退到经隧道的 TCP DNS；延迟改为完整探测往返。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.043 — 2026-11-05
+
+- #885：没写 `max_tokens` 时用模型目录的 `max_tokens_default`（例如 Haiku 5.5 为 100000，Sonnet 5 为 64000），不再一律填 128000。写了且低于 `compatibility.min_max_tokens.value` 时默认仍抬到该值；模式「不改」/ `preserve` / `unchanged` 或面板「不抬升」则不抬。未指定有效模式时兼容 `no_raise: true` / `raise: false`，显式模式优先。超过该模型 `max_tokens_cap` 仍会下调。`enabled` thinking 的 `budget_tokens` 不小于 `max_tokens` 时，仍用该配置值补 thinking 合法间隔。
+- 修复健康探测页「不抬升」对 `preserve` / `unchanged`、模式空白和旧配置标志的显示，与后端模式优先级一致；补充 12 项实际组件渲染回归及后端优先级测试。
+- 池调度：健康探针等异步路径中 RPM 窗口过期后 stale `availableAt` 会重新判定可准入，避免直接路径空等至超时。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.042 — 2026-11-05
+
+- API 配置页统一到 `#/api`，旧 `#/anthropic` 自动跳转；提供 Anthropic / OpenAI 两套默认地址和认证，支持获取模型、连通性测试及保存。获取的模型由服务端合并，不覆盖已有模型别名。
+- 渠道选择 `api` 的密钥按配置端点协议调用上游，不再误入 OAuth / Codex 槽位。OpenAI 原生 Responses 输入和推理设置保持不变，不注入 Claude persona；修复非流式回复转换。
+- 共享 OpenAI API 凭证强制 `store: false`，拒绝上游对话、存储提示词、文件/向量库引用及 MCP 等账户资源工具；调用方需发送完整的无状态历史，可保留加密推理内容和普通函数工具，避免不同密钥跨读运营方账户资源。
+- Anthropic API 端点新增独立的“风控前置审查”开关，默认关闭，旧端点迁移后也保持关闭。开启并保存后，推理请求先按风险审计中启用的规则和决策模型审查，再调用上游；不依赖 OAuth 账号范围，单请求只审查一次。本页连通性测试仍为直连诊断。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启，启动时自动迁移端点开关字段。不更换 CRAG / CLI payload，不必 `wrap-cli/sync`。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.041 — 2026-11-05
+- 新增可选 `compatibility.preserve_pruned_tool_results`：在槽位Claude推理中，按认证密钥和DSH会话隔离保存成功请求的有限工具原文；精确识别默认工具文本裁剪后恢复原始前缀，避免小幅历史裁剪造成整段缓存重写。真实编辑/压缩、失败/重试、并发歧义和内存/上下文预算不足时不恢复；缺省关闭，不改变客户端配置或API直连端点。
+
+## 1.4.038 — 2026-11-04
+
+- #882：放行 Sonnet 5.5 的 `thinking: {"type":"between_tools"}`，修复 Claude Code auto 模式分类器被本地 400 拒绝。分类器与普通 Messages 保留该模式及签名 thinking 历史；不支持的模型、`xhigh` / `max` effort 或额外 thinking 字段仍在分配账号前拒绝。
+- #886：`kernel.json` 写出面板的 `compatibility.thinking_display`（缺省 `summarized`，显式 `passthrough` 才保留调用方 display）；没传 routing 时保留已写入的 `passthrough`。本版只补配置投影，不更换 CRAG / CLI payload。
+- #878 / #883：本地转发代理的健康探测改为真实 SOCKS CONNECT，鉴权拒绝（`0xff`）或无法连接目标不再误算健康。
+- #876：远端 kernel 的短暂健康探测超时不再立即将槽位置为故障，避免瞬时抖动中断可用槽。
+- #869：集群页统一展示本机和节点的链路、槽位与机器余量；“还能放”按虚拟机内存和实测开销估算。
+- #871：允许清空当前激活 VM 选择。
+- #873：修复 `/v1/models` 已列出的 GPT Image 模型（`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2` 及快照）在 `/v1/chat/completions`、`/v1/responses` 上被 400 `model_not_supported` 拒绝、无法出图。现在这类请求走网关内置 Images 通道：最后一条 user 消息文本作 prompt，带图即 `/images/edits`，否则 `/images/generations`；Chat 回 Markdown 图片，Responses 回 `image_generation_call`，流式等待期间保活。模型开关、Free 槽排除与计费沿用 `/v1/images`。
+- #874：第三方客户端入站不带 `ttl` 的缓存断点不再以隐式 5m 出站：与 #850 的官方 Claude Code 一样，渲染前按会话 TTL（请求头 → 入站显式值 → 协议页默认，缺省 1h）补齐。只有调用方显式写 `5m` 才发 5m；前面已有 5m 时补 5m，保持 1h 在 5m 前。官方透传打开时不经过这一步。依赖隐式 5m 的调用方需改为显式 `ttl: "5m"` 或带 `x-kin-cache-ttl: 5m`。
+- #872：设备亲和把已有会话分到另一账号 / VM 时，实际拿到会话席位的请求会迁移跨账号 sticky 绑定并持久化新出站 session，同一入站对话不再逐请求变号。`slot_busy` 临时借用仍保留原绑定，晚到的结果不能覆盖新绑定。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.037 — 2026-11-03
+
+- #866：协议改写按请求体补 `inline-tools-2026-09-15`：`messages` 里出现 `tool_addition.tool.type=tool_definition` 时写入 cli-hop 的 `betas` 和直连 `anthropic-beta`。没有该块不加。修复上游 400 `a tool_definition requires anthropic-beta: inline-tools-2026-09-15`。
+
+已部署机升级：只更新 Node 控制面后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.036 — 2026-11-03
+
+- #850：官方 Claude Code 在「官方 Claude Code 家族透传」关闭时被重写后，入站不带 `ttl` 的缓存断点不再以隐式 5m 出站。渲染前按会话已解析的 TTL（协议页全局值或入站显式值）补齐，调用方显式 `5m` / `1h` 保留，补齐结果仍满足 1h 在 5m 前、最多四点。cli-hop、HTTP hop 与 API 直连一致；透传打开时不经过这一步。
+- 入站统一收成标准 Anthropic 结构再按槽位档重写，回到 1.4.00 的官方档标准（billing、身份、harness、guidance，调用方 system 接在后面）。官方家族识别本身不再跳过重写，只有协议页透传开关打开才保留官方家族入站 system、billing 与 UA；API 直连与 cli-hop / HTTP 走同一道门。修复 #843 → 1.4.033 → 1.4.034 来回改动后各路径判断不一致（cli-hop 已重写、前置层仍按“已识别即保留”处理，Claude Code 的无 TTL 断点被当成 5m 写入，会话超过 5 分钟即整段重写缓存）。
+- 移除未文档化的 `x-kin-strict-passthrough` 请求头：调用方不能再用它跳过入站剥离与客户端指纹清洗。
+- 修复 native cli-hop 最终请求未读取 `kernel.json.default_cache_ttl` 的回归：Web 设置的 `5m` / `1h` 现在传到 CLI 自有 system/tools 缓存断点；调用方保留的 message 断点不被覆盖。
+- #863 / #864：风险审计的决策模型用量按当前配置的每把 JEV key 列出请求数、成功数、估算消耗和最近状态（正常、余额不足、鉴权失败、限流、请求错误、已暂停、未请求）。key 只显示前 4 位和后 4 位，不回传完整 key 或地址。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.035 — 2026-11-03
+
+- 清理：删除零引用导出 `rewriteTelemetryBody`、`persistVmFingerprint`（REQ-CLEANUP-01 D-08），无行为变化。
+- #847：官方用量只返回 weekly 窗口时不再当成残缺结果丢掉。缺 5 小时窗口保持未知；窗口给了但读不出来仍算无效。
+- #848：修复 Docker/KVM guest OAuth 换票把控制面的宿主 loopback SOCKS 地址传给 `kin-oauth-auth`，导致容器内连接 `127.0.0.1` 被拒；Linux guest 改由槽位 `kin-eg-*` 透明出口选路，macOS native 路径不变。
+- #854：persona 重渲染注入的 `# Environment` role=system 消息改为锚定在首个 user 之后（原为最后一个 user 之后）。客户端下一轮不会回传该临时块，旧位置的 content block 数量变化会让 cache prefix 在历史中段断开、整段重写 cache；位置固定后前缀稳定。zero 模板保持原有尾部位置。
+- #861：面板 `usage_logs` 大查询改到只读 worker，失败时回退同步读。请求 finish 和 hop 尝试先入队，再在同一条写连接上分批提交，避免另开写连接撞上 `SQLITE_BUSY`。
+
+已部署机升级：只更新 Node 控制面后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.034 — 2026-11-02
+
+- #859：透传关闭时，任何入站都先收成标准 Anthropic 结构再进人设：调用方 billing 删掉并由项目重写；调用方 User-Agent 不出站。只有协议页打开官方家族透传才保留这两者。第三方工具名改为 `mcp__`，回包按原名还原。
+- #836：`ensureSlotGuestBinDir` 原子替换失败时清理 `${dest}.${pid}.tmp` 暂存文件，避免 `data/run/slot-guest-bin` 下残留堆积。
+
+已部署机升级：只更新 Node 控制面后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.033 — 2026-11-02
+
+- #850：回滚 #843 对已识别官方 Claude Code 的 cli-hop 强制 persona。识别命中且未开「官方 Claude Code 家族透传」时，cli-hop 保留入站 system 和缓存断点，不再把无 TTL 的调用方断点留给上游当成隐式 5m。`forceConfigured` 仍可改写。API 直连在开关关闭时仍按原分支清洗。
+- 风险审计送审调用方提示词（system / instructions / developer）。「官方提示词」和「官方完整提示词」正文在白名单内，不送审；夹在官方正文后的调用方文字仍送审。工具结果和 Environment 不送审。
+
+已部署机升级：只更新 Node 控制面后重启。不必 `wrap-cli/sync`，不必换 payload。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.032 — 2026-11-01
+
+- OpenAI GPT 模型页支持按上游 `priority` 档位公开 `<model>-fast` 别名；调度前还原基模型并发送 `service_tier: "priority"`。
+- Codex Image 增加 `gpt-image-2` 及 `gpt-image-2-2026-04-21` 快照，覆盖模型目录、Images 端点、Responses 图像工具、计费和槽位白名单。
+- Codex kernel 对齐 `codex-proxy-rs`：支持大图像 WebSocket 帧，并用增量字节 SSE 解码器处理拆分 UTF-8、LF/CRLF 和大流。
+- OAuth 换票与 bootstrap 全程沿用目标 VM 绑定出口。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启；本版包含 Codex kernel payload 更新，不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.031 — 2026-11-01
+
+- #841：设置 → 配额直接显示并管理「请求体上限」（`failover.max_request_mib`，8–128 MiB）。账号池「重试与切号」不再包含这项。保存后的生效方式不变：各槽 kernel 在没有请求时重启。
+- #843：官方 Claude Code 家族不再仅凭识别放行。协议页「官方 Claude Code 家族透传」（`official_cc_passthrough`）关闭时，直连、中转、子跳以及任何看起来像官方的 Messages 都走 persona 清洗；只有该开关打开才保留入站 system。cli-hop 与 HTTP 同一条门。
+- #842：上游 HTTP 400/503「Third-party apps now draw from your extra usage…」和「no third-party apps allowed」不再当无效请求、过载或额度错误。不换号、不修复重试，客户端收到 400 `refusal_guard`，该 prompt 永久写入拒答缓存，近似正文按已有阈值拦截。这是计费限制，不封 device。内容策略错误码（含只写在 `upstream_code` 的）同样永久入库并带相似度签名。
+
+已部署机升级：须更新 Node 控制面与 `web/dist` 后重启；无迁移、不必 `fetch:payload` / `wrap-cli/sync`。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.4.030 — 2026-10-31
+
+- #837：`prepareSlotOAuth` 正确读取 `startSlotReady` 嵌套的 kernel health（`boot.rust.rust.health`），兼容扁平 mock；修复非 native 槽 OAuth 上号必抛 `oauth_runtime_not_ready`。
+- #838：HTTP server `keepAliveTimeout=120000`、`headersTimeout=125000`、`timeout=0`，避免反向代理长连接被过早掐断。
 - auto mode 提示词对齐 Claude Code 2.1.310：cli-node 只在进入 auto mode 时发一次完整提醒，不再每几轮插入 `Auto mode still active…`。网关把 `Auto mode still active (reported by harness).`、旧的 sparse/六点全文折叠成这一次官方提醒；模型回声整段删掉。官方原文（Bias toward working…）不改。
 - 本机 `share/wrap-cli/cli-node` 换成 auto mode 提醒对齐后的构建。源码 `bbadf5d4`。plain 118306944 字节，SHA256 `724a94390a3cfa0a57bc590ac0c7bd4448979b6c6843753806bd32aa52426286`。UPX 5.0.2 `--best --lzma` 后 27932800 字节，SHA256 `ae120fa09a61d6ba7afa3bb57e8e389a0183c4d2026957607143d9b39562c421`。`upx -t` 通过，`--version` 为 `2.1.303 (Claude Code)`。payload 未更新，线上槽位未部署。
+
+已部署机升级：更新 Node 控制面后重启（本版不必更新 web/dist）。不要覆盖 routing.json、vms/、data/、.env。
 
 ## 1.4.029 — 2026-10-30
 

@@ -125,15 +125,19 @@
       "max_concurrency": 2,
       "max_rpm": 0,
       "max_sessions": 0
+    },
+    "model_mappings": {
+      "codex-auto-review": "gpt-6-luna"
     }
   },
 
   "compatibility": {
     "persona_preset": "official_full",
+    "crag_persona_preset": "official_full",
     "overlay_preset": "off",
     "persona_park": false,
     "cache_ttl": "1h",
-    "min_max_tokens": { "enabled": true, "value": 128 }
+    "min_max_tokens": { "enabled": true, "value": 128, "mode": "floor" }
   },
   "official_cc": {
     "enabled": true,

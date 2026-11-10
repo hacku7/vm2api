@@ -26,6 +26,9 @@ import { resolveInferenceEngine } from '../vm/slot-engine.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
 import { dockerRequest } from '../cluster/docker-remote.mjs'
 import { clusterManager, vmNodeId } from '../cluster/placement.mjs'
+import { vmTimeoutTracker } from '../pool/failover-runner.mjs'
+import path from 'node:path'
+import { checkCragLicense } from '../vm/crag-license.mjs'
 
 /** A failed observation is not evidence of a dead container. Use the slot's own host, including KVM runners. */
 export async function observeWatchdogContainer(
@@ -70,7 +73,7 @@ export const DEFAULT_KERNEL_WATCHDOG = Object.freeze({
   enabled: true,
   interval_sec: 20,
   timeout_ms: 15_000,
-  // Wait before each container restart, including the first one.
+  // Wait before each recovery attempt, including the first one.
   restart_backoff_sec: Object.freeze([60, 300, 900]),
   restart_window_sec: 3600,
 })
@@ -98,14 +101,16 @@ const HARD_DOWN = new Set(['stopped', 'dead', 'error', 'disabled'])
 
 export function isKernelWatchdogTarget(vm, routing = {}) {
   if (!vm?.id) return false
+  if (vm.migration_pending || ['running', 'needs_attention'].includes(vm.slot_migration?.status)) return false
   if (HARD_DOWN.has(String(vm.status || '').toLowerCase())) return false
   // Effective engine, not the slot's own fields: panel-created slots omit
   // inference_engine and inherit routing.inference.engine (usually rust).
   return resolveInferenceEngine(vm, routing) === 'rust'
 }
 
-/** A node slot answers through an SSH relay across the ocean (~110ms RTT); 800ms misfires there. */
-export const NODE_SLOT_HEALTH_TIMEOUT_MS = 3000
+/** Remote node probes cross an SSH relay; allow transport jitter beyond the previous 3s probe timeout. */
+export const NODE_SLOT_HEALTH_TIMEOUT_MS = 8000
+export const NODE_SLOT_FAILURES_BEFORE_RESTART = 3
 
 function clusterRelayPaths(nodeId, vmId) {
   return clusterManager().slotRelayPaths(nodeId, vmId)
@@ -159,6 +164,8 @@ export function createKernelWatchdog({
   let inTick = false
   // vmId -> { attempts: [ms], nextAt }
   const restarts = new Map()
+  // Remote transport failures can be relay/gate jitter, not a dead kernel.
+  const nodeProbeFailures = new Map()
   // VMs under an operator power cycle: the watchdog must not restart them mid-cycle.
   const held = new Set()
   // vmId -> this tick's pending check/restart, so hold() can wait for it to settle.
@@ -176,8 +183,7 @@ export function createKernelWatchdog({
       })
   }
 
-  /** L4 gate: bounded container restarts with growing waits; spending them is L5. */
-  function admitRestart(vm, reason, at) {
+  function restartBudget(vm, reason, at) {
     if (kernelFaults.has(vm.id)) return false
     const state = restarts.get(vm.id) || { attempts: [], nextAt: at + config.restart_backoff_sec[0] * 1000 }
     state.attempts = state.attempts.filter((t) => at - t < config.restart_window_sec * 1000)
@@ -185,7 +191,7 @@ export function createKernelWatchdog({
     if (at < state.nextAt) return false
     const backoff = config.restart_backoff_sec
     if (state.attempts.length >= backoff.length) {
-      const fault = `kernel unhealthy after ${state.attempts.length} container restarts: ${reason}`
+      const fault = `kernel unhealthy after ${state.attempts.length} recovery attempts: ${reason}`
       kernelFaults.set(vm.id, fault)
       console.error(`[kernel-watchdog] ${vm.id} faulted; scheduling skips it: ${fault}`)
       if (typeof onFault === 'function') {
@@ -197,8 +203,23 @@ export function createKernelWatchdog({
       }
       return false
     }
+    return true
+  }
+
+  function recordRestart(vm, at) {
+    const state = restarts.get(vm.id)
+    if (!state) return
     state.attempts.push(at)
-    const nextDelay = backoff[state.attempts.length] ?? config.interval_sec
+    const nextDelay = config.restart_backoff_sec[state.attempts.length] ?? config.interval_sec
+    state.nextAt = at + nextDelay * 1000
+  }
+
+  /** L4 gate for container revival, where the failed runtime state is confirmed. */
+  function admitRestart(vm, reason, at) {
+    if (!restartBudget(vm, reason, at)) return false
+    const state = restarts.get(vm.id)
+    state.attempts.push(at)
+    const nextDelay = config.restart_backoff_sec[state.attempts.length] ?? config.interval_sec
     state.nextAt = at + nextDelay * 1000
     return true
   }
@@ -212,6 +233,9 @@ export function createKernelWatchdog({
   }
 
   async function checkVm(vm, routing) {
+    const home = typeof homeDirFor === 'function' ? homeDirFor(vm) : null
+    const licensed = checkCragLicense(home ? path.resolve(home, '../../..') : '', vm, routing)
+    if (!licensed.ok) return // Activation, not container recovery, repairs licensing failures.
     const probed = probeVm(vm)
     if (!probed) {
       // The kernel cannot be probed without its relay; only a container that is really down is revived.
@@ -226,12 +250,22 @@ export function createKernelWatchdog({
     }
     const current = await health(exec, { timeoutMs: vmNodeId(vm) ? NODE_SLOT_HEALTH_TIMEOUT_MS : 800 })
     if (held.has(vm.id)) return
+    if (vmNodeId(vm) && !rustKernelProcessUp(current) && current?.healthy !== false) {
+      const failures = (nodeProbeFailures.get(vm.id) || 0) + 1
+      nodeProbeFailures.set(vm.id, failures)
+      if (failures < NODE_SLOT_FAILURES_BEFORE_RESTART) return
+    } else {
+      nodeProbeFailures.delete(vm.id)
+    }
     // cc-node is the crag worker. Restarting a live kernel SIGKILLs it.
     if (dataplaneUsesCcNode(exec) && rustKernelProcessUp(current)) return
     if (!rustKernelNeedsRestart(current)) {
       // Healthy again after a fault means someone fixed it: start a fresh budget.
       // Plain recovery keeps past attempts so a crash loop stays bounded by the window.
-      if (kernelFaults.delete(vm.id)) restarts.delete(vm.id)
+      if (kernelFaults.delete(vm.id)) {
+        restarts.delete(vm.id)
+        vmTimeoutTracker?.reset?.(vm.id)
+      }
       // Config convergence, not a failure: outside the restart budget.
       if (kernelSlotMismatch(exec)) {
         const observed = await observeRuntime(vm)
@@ -245,9 +279,27 @@ export function createKernelWatchdog({
     // Permission/transport failures and deliberately paused containers never authorize recovery.
     if (!['running', 'missing', 'stopped', 'restarting'].includes(observed?.state)) return
     if (observed.state !== 'running') return reviveDownContainer(vm, observed.state)
-    if (!admitRestart(vm, reason, now())) return
-    console.warn(`[kernel-watchdog] ${vm.id} restarting container: ${reason}`)
-    const result = await ensure(exec, { timeoutMs: config.timeout_ms })
+    const attemptAt = now()
+    if (!restartBudget(vm, reason, attemptAt)) return
+    let result
+    try {
+      result = await ensure(exec, {
+        timeoutMs: config.timeout_ms,
+        healthTimeoutMs: vmNodeId(vm) ? NODE_SLOT_HEALTH_TIMEOUT_MS : 800,
+      })
+    } catch (error) {
+      recordRestart(vm, now())
+      throw error
+    }
+    const resultAt = now()
+    if (result?.reason === 'already_up' || result?.reason === 'busy') {
+      nodeProbeFailures.delete(vm.id)
+      const state = restarts.get(vm.id)
+      if (state) state.nextAt = resultAt + config.interval_sec * 1000
+      return
+    }
+    recordRestart(vm, resultAt)
+    console.warn(`[kernel-watchdog] ${vm.id} recovery attempt: ${reason}`)
     if (held.has(vm.id)) return
     // The container itself is gone or exited: a kernel restart cannot help, a full boot can.
     if (result?.reason === 'container_unavailable' && typeof revive === 'function' && vm.status === 'running') {
@@ -324,6 +376,7 @@ export function createKernelWatchdog({
     reset(vmId) {
       const faulted = kernelFaults.delete(vmId)
       restarts.delete(vmId)
+      vmTimeoutTracker?.reset?.(vmId)
       return { faulted }
     },
     restartsInWindow(vmId) {
