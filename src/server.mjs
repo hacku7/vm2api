@@ -127,7 +127,7 @@ import { createResponsesWsHandler } from './lib/protocol/responses-ws.mjs'
 import { handleUserUsage } from './lib/protocol/user-count-tokens.mjs'
 import { createKeySelfHandler, KEY_SELF_PATHS } from './lib/protocol/key-self.mjs'
 import { createPanelHandler } from './lib/admin/panel-routes.mjs'
-import { createCragShopHandler, isCragShopPath, sessionBuyerOwner } from './lib/admin/crag-shop.mjs'
+import { isRemovedShopPath } from './lib/http/removed-shop-path.mjs'
 
 const FEATURES = [
   'passthrough',
@@ -744,11 +744,10 @@ function rejectAuth(req, res, error) {
 }
 
 /** `keyGate: false` (key self-service) skips the managed key's quota / RPM / concurrency gate and the gateway bucket. */
-function requireAuth(req, res, { keyGate = true, buyer = false, optionalBuyer = false } = {}) {
+function requireAuth(req, res, { keyGate = true } = {}) {
   req.presentedApiKey = extractApiKey(req)
   const token = extractPanelToken(req) || req.presentedApiKey
   if (!token) {
-    if (buyer && optionalBuyer) return false
     return rejectAuth(
       req,
       res,
@@ -780,16 +779,7 @@ function requireAuth(req, res, { keyGate = true, buyer = false, optionalBuyer = 
     const rec = panelUsers.getByUsername(session.user)
     req.panelUserId = rec?.id || null
     req.panelVmCreateQuota = rec?.vm_create_quota ?? 0
-    if (buyer) req.panelBuyerOwner = sessionBuyerOwner(session, rec, getPanelAdmin())
     return true
-  }
-  if (buyer) {
-    if (optionalBuyer) return false
-    json(res, 403, {
-      ok: false,
-      error: { code: 'shop_login_required', message: 'Sign in to the panel to access CRAG shop' },
-    })
-    return false
   }
   // Master env API key — unlimited admin
   if (timingSafeEqualStr(token, cfg.api_key)) {
@@ -1075,38 +1065,9 @@ const cragSubscription = createCragSubscription({
 })
 configureCragRuntimeAdmission(cfg.paths.project, cragSubscription.withRuntimeAdmission)
 
-function isCragShopAdmin(owner) {
-  if (owner?.startsWith('panel:')) {
-    const record = panelUsers.getById(owner.slice('panel:'.length))
-    return !!record?.enabled && record.role === 'admin'
-  }
-  const configured = getPanelAdmin()
-  return (
-    !!configured.password &&
-    owner === `configured-admin:${configured.username}` &&
-    !panelUsers.getByUsername(configured.username)
-  )
-}
-
-const cragShopActivationEnabled =
-  process.env.KIN_CRS_MOCK !== '1' && process.env.VM2API_CRAG_SHOP_AUTO_ACTIVATION !== '0'
-const handleCragShop = createCragShopHandler({
-  getDb,
-  dataDir: cfg.paths.data,
-  publicBaseUrl: cfg.base_url,
-  json,
-  readRawBody,
-  subscription: cragSubscription,
-  isCurrentAdmin: (req) => isCragShopAdmin(req.panelBuyerOwner),
-  isActivationAdmin: isCragShopAdmin,
-  allowDeviceRequest: () => allowRate('crag-shop:device'),
-  activationEnabled: cragShopActivationEnabled,
-})
-
 const handlePanel = createPanelHandler({
   getDb,
   cragSubscription,
-  handleCragShop,
   json,
   writeSSEHeaders,
   readBody,
@@ -1235,7 +1196,11 @@ const server = http.createServer(async (req, res) => {
   try {
     res.req = req
     const url = parseRequestUrl(req)
-    if (url && isCragShopPath(url.pathname)) res.setHeader('Cache-Control', 'no-store')
+    // Retired routes never enter auth, CORS preflight, static serving, or panel dispatch.
+    if (url && isRemovedShopPath(url.pathname)) {
+      res.setHeader('Cache-Control', 'no-store')
+      return json(res, 404, { error: { message: 'Not found' } })
+    }
     if (req.method === 'OPTIONS') {
       res.writeHead(204, corsHeadersForRequest(req))
       return res.end()
@@ -1506,27 +1471,6 @@ server.listen(cfg.port, cfg.host, () => {
     const timer = setInterval(refresh, 1_000).unref()
     server.once('close', () => clearInterval(timer))
     refresh()
-  }
-  if (cragShopActivationEnabled) {
-    const poll = () =>
-      void handleCragShop.pollActivation().catch(() => {
-        console.warn('[crag-shop] activation polling deferred')
-      })
-    const timer = setInterval(poll, 2_000).unref()
-    server.once('close', () => clearInterval(timer))
-    poll()
-  }
-  // An unpaid checkout link outliving its payment window is part of the order
-  // lifecycle, so this runs whether or not activation polling is enabled. One order
-  // per tick, so a backlog drains without bursting requests at the supplier.
-  {
-    const expireOrders = () =>
-      void handleCragShop.pollOrderExpiry().catch(() => {
-        console.warn('[crag-shop] order expiry deferred')
-      })
-    const timer = setInterval(expireOrders, 60_000).unref()
-    server.once('close', () => clearInterval(timer))
-    expireOrders()
   }
   // Installation intent is durable; reconnecting nodes must not depend on a lost HTTP callback.
   if (process.env.KIN_CRS_MOCK !== '1') {

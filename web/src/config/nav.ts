@@ -29,7 +29,7 @@ export const VIEW_TITLES: Record<ViewId, string> = {
   import: '导入',
   specs: '规格',
   billing: '计费',
-  'crag-subscription': '订阅 CRAG',
+  'crag-subscription': 'CRAG 授权',
   proxies: '代理池',
   models: '模型',
   risk: '风险审计',

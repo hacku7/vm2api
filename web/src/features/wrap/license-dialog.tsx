@@ -26,7 +26,7 @@ export function KernelLicenseDialog({
       >
         <DialogTitle>{vm.name || vm.id}</DialogTitle>
         <DialogDescription className='sr-only'>
-          查看本槽授权状态。订阅套餐只在订阅页用订阅使用券兑换。
+          查看本槽授权状态。已有订阅使用券可在「CRAG 授权」兑换。
         </DialogDescription>
         <CragLicenseEditor
           vmId={vm.id}

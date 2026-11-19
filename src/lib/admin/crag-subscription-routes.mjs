@@ -1,5 +1,5 @@
 import { panelIdentity } from './panel-acl.mjs'
-import { sameOriginPost } from './crag-shop.mjs'
+import { sameOriginPost } from '../http/same-origin.mjs'
 
 const ROOT = '/api/panel/crag-subscription'
 const BIND = /^\/api\/panel\/vms\/([^/]+)\/crag-license\/bind$/

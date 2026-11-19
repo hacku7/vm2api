@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { CragSubscriptionPage } from '@/features/billing/crag-shop'
+import { CragSubscriptionPage } from '@/features/billing/crag-subscription'
 
 export const Route = createFileRoute('/_authenticated/crag-subscription')({
   component: CragSubscriptionPage,

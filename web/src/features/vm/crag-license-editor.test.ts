@@ -25,12 +25,12 @@ describe('cragLicenseErrorMessage', () => {
       expect(message(code)).toBe(text)
   })
 
-  it('points a full quota at the two visible numbers and at topping up', () => {
+  it('points a full quota at slot usage and existing voucher redemption', () => {
     for (const code of ['slot_limit_reached', 'license_crag_host_over_quota']) {
       const text = message(code)
       expect(text).toContain('使用中的槽位')
       expect(text).toContain('充值可用槽位')
-      expect(text).toContain('继续充值')
+      expect(text).toContain('兑换已有使用券')
       expect(text).not.toContain('可用槽位已用完')
     }
   })

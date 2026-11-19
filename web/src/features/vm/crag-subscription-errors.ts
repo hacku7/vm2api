@@ -10,14 +10,13 @@
  * 在两边措辞不同。
  *
  * 用户侧只有两个数字：「充值可用槽位」与「使用中的槽位」（真正在运行调度的
- * CRAG 内核数）。文案只引用这两个名字，满了就引导继续充值 —— 不要引入第三个
- * 叫法，也不要提及当前不存在的用户动作。
+ * CRAG 内核数）。文案只引用这两个名字。
  */
 export const cragSubscriptionErrors: Record<string, string> = {
   slot_limit_reached:
-    '使用中的槽位已达到充值可用槽位。请继续充值，或先停止其他正在运行的 CRAG 槽。',
+    '使用中的槽位已达到充值可用槽位。请停止其他正在运行的 CRAG 槽，或在「CRAG 授权」兑换已有使用券。',
   host_subscription_inactive:
-    '本机没有有效订阅。请在「订阅 CRAG」充值并兑换后再绑定。',
+    '本机没有有效订阅。请在「CRAG 授权」兑换已有订阅使用券后再绑定。',
   host_binding_conflict: '此槽的设备身份与原绑定不一致，未绑定。',
   crag_subscription_target_unready:
     '此槽暂不能绑定订阅。请确认使用可信 CRAG 包，且未绑定其他有效授权。',
@@ -25,7 +24,7 @@ export const cragSubscriptionErrors: Record<string, string> = {
   crag_subscription_sync_pending:
     '上次订阅变更尚未同步。请先点「继续同步」完成，再进行新的绑定或兑换。',
   crag_subscription_authority_unavailable:
-    '尚未确认操作结果，请在同一目标槽重试，不必重新购买。',
+    '尚未确认操作结果，请在同一目标槽重试。',
   payload_key_unknown:
     '授权服务未登记此内核载荷。已到账的槽位会保留，可在兼容槽位使用。',
   payload_key_conflict:

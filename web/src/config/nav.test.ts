@@ -76,6 +76,13 @@ describe('route ↔ view table', () => {
     expect(PAGE_PATHS).not.toContain('/route')
   })
 
+  it('keeps license management without registering either public storefront', () => {
+    const publicRoutes = Object.keys(import.meta.glob('/src/routes/*.tsx'))
+    expect(publicRoutes).not.toContain('/src/routes/crag-purchase.tsx')
+    expect(publicRoutes).not.toContain('/src/routes/crag-preview.tsx')
+    expect(PAGE_PATHS).toContain('/crag-subscription')
+  })
+
   it('assigns every page under _authenticated to a view', () => {
     expect(
       PAGE_PATHS.filter((path) => viewForPath(path) === undefined)

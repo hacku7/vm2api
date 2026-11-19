@@ -54,7 +54,7 @@ function standaloneHost(t, fetchImpl) {
   }
 }
 
-test('host checkout falls back to the D-Bus machine ID without changing an existing binding', (t) => {
+test('subscription identity falls back to the D-Bus machine ID without changing an existing binding', async (t) => {
   const { root, machineIdFile, publicDir, connect } = standaloneHost(t)
   const alternate = path.join(root, 'dbus-machine-id')
   const service = connect({ machineIdFile: [machineIdFile, alternate] })
@@ -62,18 +62,18 @@ test('host checkout falls back to the D-Bus machine ID without changing an exist
   const expected = crypto.createHash('sha256').update(`crag-host-v1:${raw}`).digest('hex')
   fs.writeFileSync(alternate, '12345678-90AB-CDEF-1234-567890ABCDEF\n', { mode: 0o600 })
   fs.writeFileSync(machineIdFile, 'uninitialized\n')
-  assert.equal(service.purchaseDeviceId(), expected)
+  await assert.rejects(service.renewalProof(), { code: 'host_subscription_inactive' })
 
   fs.mkdirSync(publicDir, { recursive: true, mode: 0o755 })
   fs.writeFileSync(path.join(publicDir, 'host_id'), expected, { mode: 0o644 })
   fs.writeFileSync(machineIdFile, 'b'.repeat(32))
-  assert.equal(service.purchaseDeviceId(), expected)
+  await assert.rejects(service.renewalProof(), { code: 'host_subscription_inactive' })
 
   fs.rmSync(alternate)
-  assert.throws(() => service.purchaseDeviceId(), { code: 'crag_subscription_host_identity_changed' })
+  await assert.rejects(service.renewalProof(), { code: 'crag_subscription_host_identity_changed' })
   fs.rmSync(machineIdFile)
   fs.symlinkSync(path.join(publicDir, 'host_id'), machineIdFile)
-  assert.throws(() => service.purchaseDeviceId(), { code: 'crag_subscription_host_identity_unavailable' })
+  await assert.rejects(service.renewalProof(), { code: 'crag_subscription_host_identity_unavailable' })
 })
 
 function postSubscription(subscription) {
@@ -129,7 +129,6 @@ test('a legacy cluster slot can bind while stopped and reissue an old package pe
   for (const id of ['active', '../legacy_cluster-52']) {
     await assert.rejects(service.bind({ ...vm, id }), { code: 'crag_subscription_target_unready', status: 409 })
   }
-  assert.deepEqual(await service.listOrderTargets(), [vm.id])
   await assert.rejects(service.bind(vm), { code: 'host_subscription_inactive', status: 403 })
   inactive = false
   assert.deepEqual(await service.bind(vm), { seat: 1 })
@@ -535,38 +534,24 @@ test('standalone redeem with a missing or corrupt host package does not start a 
   }
 })
 
-test('a device purchase applies signed rights only to its verified host and replays the same voucher after loss', async (t) => {
-  const redemptionCode = voucher()
-  const requests = []
-  let issued
-  const { root, publicDir, connect } = standaloneHost(t, async (url, { body, headers }) => {
-    const request = JSON.parse(body)
-    if (url.endsWith('/redeem')) {
-      requests.push({ request, authorization: headers.authorization })
-      if (!issued) {
-        issued = issueHostEntitlement(root, request.host_id, { slot_limit: 10 })
-        throw new Error('committed response interrupted')
-      }
-    }
+test('existing subscription can request a renewal proof without any checkout call', async (t) => {
+  let proof = 'CRAGRP1.fixture.signature'
+  const calls = []
+  const { root, connect } = standaloneHost(t, async (url, { body }) => {
+    const action = new URL(url).pathname.split('/').at(-1)
+    calls.push(action)
+    if (action === 'renewal-proof') return Response.json({ ok: true, data: { proof } })
+    assert.equal(action, 'redeem')
+    const issued = issueHostEntitlement(root, JSON.parse(body).host_id, { slot_limit: 10 })
     return Response.json({ ok: true, data: { entitlement: issued.code, ...issued.claims, used_slots: 0 } })
   })
-  const service = connect()
-  const hostId = service.purchaseDeviceId()
-  assert.match(hostId, /^[a-f0-9]{64}$/)
-  assert.equal(fs.existsSync(path.join(publicDir, 'host_id')), false, 'checkout does not create a subscription')
   seedEncryptedPackage(root)
-  const wrongHost = `${hostId[0] === 'a' ? 'b' : 'a'}${hostId.slice(1)}`
-  await assert.rejects(service.redeemDeviceOrder(wrongHost, redemptionCode))
-  assert.equal(requests.length, 0)
-  await assert.rejects(service.redeemDeviceOrder(hostId, redemptionCode), {
-    code: 'crag_subscription_authority_unavailable',
-  })
-  await assert.rejects(connect().redeemDeviceOrder(hostId, voucher()), { code: 'crag_subscription_sync_pending' })
-  await connect().redeemDeviceOrder(hostId, redemptionCode)
-  assert.equal(requests.length, 2)
-  assert.deepEqual(requests[1], requests[0])
-  assert.deepEqual(requests[0].request, { host_id: hostId, redemption_code: redemptionCode })
-  assert.equal((await service.status()).available_seats, 10)
+  const service = connect()
+  await service.redeem(voucher())
+  assert.equal(await service.renewalProof(), proof)
+  proof = 'invalid'
+  await assert.rejects(service.renewalProof())
+  assert.deepEqual(calls, ['redeem', 'renewal-proof', 'renewal-proof'])
 })
 
 test('standalone recovery waits for the original verified host package before replaying a lost response', async (t) => {
@@ -1804,7 +1789,7 @@ test('slots without host entitlement do not need host identity or invoke a stop 
 test('deferred deletion is bounded and refuses duplicate or malformed evidence', async (t) => {
   const f = await seatReleaseFixture(t)
   const vm = f.state.targets[0]
-  const hostId = f.service.purchaseDeviceId()
+  const hostId = fs.readFileSync(path.join(f.publicDir, 'host_id'), 'utf8')
   const entry = (index) => ({
     vm_id: `vm-deferred-${index}`,
     permit_sha256: index.toString(16).padStart(64, '0'),
@@ -1895,21 +1880,23 @@ test('only an authenticated same-origin admin session can redeem without reveali
   assert.equal(JSON.stringify(response).includes(code), false)
 })
 
-test('failed authority syncs clear locks, new orders reconcile stale pins, and existing services stay active', async (t) => {
+test('failed authority syncs clear locks, legacy order pins stay inert, and existing services stay active', async (t) => {
   let failRedeemWith409 = false
-  let loseOrderRedeem = false
+  let loseRedeem = false
+  let calls = 0
   let current
   let seats = 0
   const { root, publicDir, privateDir, connect } = standaloneHost(t, async (url, { body }) => {
+    calls++
     const action = url.split('/').at(-1)
     const parsed = JSON.parse(body)
     if (action === 'redeem') {
       if (failRedeemWith409) {
         return Response.json({ ok: false, error: { code: 'host_binding_conflict' } }, { status: 409 })
       }
-      if (loseOrderRedeem) {
-        loseOrderRedeem = false
-        throw new Error('network lost on order 1')
+      if (loseRedeem) {
+        loseRedeem = false
+        throw new Error('network lost during redeem')
       }
       current = issueHostEntitlement(root, parsed.host_id, {
         revision: (current?.claims?.revision ?? 0) + 1,
@@ -1958,27 +1945,20 @@ test('failed authority syncs clear locks, new orders reconcile stale pins, and e
   assert.equal(fs.existsSync(path.join(privateDir, 'redeem.json')), false)
   failRedeemWith409 = false
 
-  // An interrupted order-1 leaves sync_pending, must NOT pause vm1, and order-2 reconciles cleanly.
-  const fp2 = await service.pinOrderTarget(vm2.id)
-  loseOrderRedeem = true
-  await assert.rejects(
-    service.activateOrder({
-      orderId: 'ord-1',
-      target: { vm_id: vm2.id, fingerprint: fp2 },
-      claim: () => voucher(),
-    }),
-    { code: 'crag_subscription_authority_unavailable' },
-  )
+  // An old checkout left an intent; startup recovery must not replay it or pause vm1.
+  fs.writeFileSync(path.join(privateDir, 'redeem.json'), JSON.stringify({
+    host_id: current.claims.host_id, redemption_code: voucher(), order_id: 'ord-1',
+  }), { mode: 0o600 })
+  fs.writeFileSync(path.join(publicDir, 'sync-pending'), 'pending\n', { mode: 0o644 })
+  const beforeRecovery = calls
+  await service.recover()
+  assert.equal(calls, beforeRecovery)
   assert.equal((await service.status()).state, 'sync_pending')
   assert.equal(checkCragLicense(root, vm1).ok, true)
   assert.equal(await service.admitInference({ vm: vm1 }), null)
 
-  const activated = await service.activateOrder({
-    orderId: 'ord-2',
-    target: { vm_id: vm2.id, fingerprint: fp2 },
-    claim: () => voucher(),
-  })
-  assert.equal(activated.seat, 2)
+  await service.activateVoucher(vm2.id, voucher())
+  assert.equal(checkCragLicense(root, vm2).license.seat, 2)
   assert.equal((await service.status()).state, 'active')
 
   // A running KVM slot must also be restored (never left blocked) when a 503 leaves sync_pending.
@@ -2010,7 +1990,7 @@ test('failed authority syncs clear locks, new orders reconcile stale pins, and e
   assert.equal(kvmBlocked, false)
 
   // A 503 during standalone renewal leaves sync_pending, yet restoreKvmBindings unblocks the running KVM slot.
-  loseOrderRedeem = true
+  loseRedeem = true
   await assert.rejects(kvmService.redeem(voucher(), true), { code: 'crag_subscription_authority_unavailable' })
   assert.equal((await kvmService.status()).state, 'sync_pending')
   assert.equal(kvmBlocked, false, '503 sync_pending must not leave running KVM slot blocked')

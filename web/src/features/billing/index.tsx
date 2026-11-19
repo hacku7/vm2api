@@ -21,7 +21,6 @@ import { SlotIdentity } from '@/components/platform-chip'
 import { QueryGate } from '@/components/query-gate'
 import { StatCard } from '@/components/stat-card'
 import { billingQueryOptions } from '@/features/billing/queries'
-import { CragShopLink } from '@/features/vm/crag-license-editor'
 import { emptyTotals, splitBilling } from './split'
 
 type PlatformFilter = 'all' | VmKind
@@ -54,7 +53,6 @@ export function BillingPage() {
       title={VIEW_TITLES.billing}
       extra={
         <div className='flex flex-wrap gap-2'>
-          <CragShopLink />
           <Button
             size='sm'
             variant={groupBy === 'vm' ? 'default' : 'outline'}

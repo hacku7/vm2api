@@ -1169,31 +1169,16 @@ export function createCragSubscription({
     return bind(await reclaimStoppedSeat(vm, rights, runtime))
   }
 
-  function redeem(value, renewal, expectedHost) {
+  function redeem(value, renewal) {
     return exclusive(
       async () => {
         const redemption_code = typeof value === 'string' && value.trim()
         if (!validVoucher(redemption_code)) throw fail('crag_subscription_invalid_request', 400)
         const hostId = identity()
-        if (expectedHost && hostId !== expectedHost) throw hostIdentityChanged()
         const packageDigest = renewal ? undefined : hostPackageDigest(projectRoot)
         storage(!renewal)
         const previous = current(hostId)
         if (renewal && !previous) throw fail('host_subscription_inactive', 409)
-        const pending = expectedHost && load(intentFile, 0o600, 512)
-        if (pending) {
-          const intent = JSON.parse(pending)
-          if (
-            intent.host_id !== hostId ||
-            intent.redemption_code !== redemption_code ||
-            intent.host_package_sha256 !== packageDigest ||
-            Object.keys(intent).length !== 3 ||
-            readRosterIntent()
-          )
-            throw fail('crag_subscription_sync_pending', 409)
-          await finish(hostId, intent, previous)
-          return
-        }
         const rawIntent = load(intentFile, 0o600, 512)
         if (rawIntent != null) {
           const savedIntent = JSON.parse(rawIntent)
@@ -1220,7 +1205,7 @@ export function createCragSubscription({
         }
         publish(intentFile, JSON.stringify(intent), 0o600, true)
         const confirmed = await finish(hostId, intent, previous, asserted)
-        if (!expectedHost) return status(confirmed)
+        return status(confirmed)
       },
       { blockBefore: true },
     )
@@ -1346,45 +1331,41 @@ export function createCragSubscription({
       const confirmed = verifyRights(hostId, remote, previous)
       if (!previous || confirmed.code !== previous.code) publish(entitlementFile, confirmed.code, 0o644)
     } catch {
-      // Clear the stale order intent anyway; unconfirmed orders can retry via shop polling.
+      // Clearing a stale intent must not prevent a new manual redemption.
     }
     remove(marker)
     remove(intentFile)
   }
 
-  function activateTarget({ orderId, target, authorize, claim, redeemed, onRedeemed }) {
+  function activateTarget(target, redemption_code) {
     return exclusive(
       async () => {
         const hostId = identity()
         const checkTarget = async () => {
-          authorize?.()
           const resolved = await orderTarget(hostId, target.vm_id)
           if (resolved.fingerprint !== target.fingerprint || identity() !== hostId)
             throw fail('crag_subscription_target_changed', 409)
-          authorize?.()
           return resolved
         }
 
         await checkTarget()
-        if (!redeemed) {
+        {
           storage(true)
-          const redemption_code = await claim()
           if (!validVoucher(redemption_code)) throw invalidRights()
           const resolved = await checkTarget()
           const standard = standardEnrollment(projectRoot, resolved)
           const staleRoster = readRosterIntent()
           if (staleRoster?.action === 'bind' && !staleRoster.reissue) clearRosterIntent()
           let raw = load(intentFile, 0o600, 512)
-          const binding = orderId ? { order_id: orderId } : { target_fingerprint: target.fingerprint }
-          let intent = { host_id: hostId, redemption_code, ...binding }
+          let intent = { host_id: hostId, redemption_code, target_fingerprint: target.fingerprint }
           if (raw != null) {
             const saved = JSON.parse(raw)
-            const sameOrder =
-              saved.order_id === intent.order_id &&
+            const sameVoucher =
+              !Object.hasOwn(saved, 'order_id') &&
               saved.target_fingerprint === intent.target_fingerprint &&
               saved.host_id === hostId &&
               saved.redemption_code === redemption_code
-            if (!sameOrder) {
+            if (!sameVoucher) {
               if (Object.hasOwn(saved, 'order_id') || Object.hasOwn(saved, 'target_fingerprint')) {
                 await reconcileStaleOrderIntent(hostId, current(hostId))
                 raw = null
@@ -1398,7 +1379,7 @@ export function createCragSubscription({
           }
           if (raw == null) {
             const pending = readRosterIntent()
-            if (!orderId && pending?.action === 'bind') await syncRoster(hostId, pending, current(hostId))
+            if (pending?.action === 'bind') await syncRoster(hostId, pending, current(hostId))
             checkNoIntent()
             if (!current(hostId) && standard.payload_key_id) Object.assign(intent, standard)
             credential(hostId, true)
@@ -1412,7 +1393,6 @@ export function createCragSubscription({
           )
             throw hostPackageUnready()
           await finish(hostId, intent, current(hostId), asserted ? standard : {})
-          onRedeemed?.()
         }
 
         const pending = readRosterIntent()
@@ -1437,40 +1417,10 @@ export function createCragSubscription({
     status: () => status(),
     admitInference,
     withRuntimeAdmission,
-    purchaseDeviceId: identity,
-    redeemDeviceOrder(hostId, voucher) {
-      if (!isDigest(hostId)) throw fail()
-      return redeem(voucher, false, hostId)
-    },
-    async listOrderTargets() {
-      try {
-        const hostId = identity()
-        current(hostId)
-      } catch {
-        return []
-      }
-      const targets = []
-      for (const vm of await listTargets()) {
-        if (!isCragOrderVmId(vm.id)) continue
-        try {
-          if ((await assertReady(vm, { allowPrepared: true })) === false) continue
-          preserveOtherLicense(vm)
-          targets.push(vm.id)
-        } catch (error) {
-          if (error.code !== 'crag_subscription_target_unready') throw error
-        }
-      }
-      return targets
-    },
-    async pinOrderTarget(vmId) {
-      const hostId = identity()
-      return (await orderTarget(hostId, vmId)).fingerprint
-    },
-    activateOrder: activateTarget,
     async activateVoucher(vmId, voucher) {
       const hostId = identity()
       const { fingerprint } = await orderTarget(hostId, vmId)
-      const { activated } = await activateTarget({ target: { vm_id: vmId, fingerprint }, claim: () => voucher })
+      const { activated } = await activateTarget({ vm_id: vmId, fingerprint }, voucher)
       return activated
     },
     redeem(value) {
@@ -1652,8 +1602,7 @@ export function createCragSubscription({
           remove(intentFile)
           return
         }
-        // An order may only resume redemption after re-authorizing its checkout pin;
-        // keep order_id / target_fingerprint intact for shop polling (it no longer blocks existing slots or new orders).
+        // Never replay a legacy checkout or target-pinned voucher without its original target checks.
         if (Object.hasOwn(intent, 'order_id') || Object.hasOwn(intent, 'target_fingerprint')) return
         const pinned = Object.hasOwn(intent, 'host_package_sha256')
         if (pinned) assertHostPackage(projectRoot, intent.host_package_sha256)

@@ -32,7 +32,7 @@ const licenseMessages: Record<string, string> = {
   license_binding_mismatch:
     '注册码不属于本槽或当前机器。请使用下方机器码申请匹配的注册码。',
   license_crag_host_over_quota:
-    '使用中的槽位超过充值可用槽位，本槽已暂停调度。请继续充值，或停止其他正在运行的 CRAG 槽。',
+    '使用中的槽位超过充值可用槽位，本槽已暂停调度。请停止其他正在运行的 CRAG 槽，或在「CRAG 授权」兑换已有使用券。',
   license_unconfigured:
     '服务器尚未配置可信授权公钥或加密 CRAG 包。请联系管理员安装受信任的完整软件包后重试。',
   license_redeem_unavailable:
@@ -78,7 +78,7 @@ export function cragLicenseErrorMessage(error: unknown) {
   return '无法完成授权请求。请检查连接和服务器配置后重试；仍然失败时请联系管理员。'
 }
 
-export function CragShopLink() {
+function CragLicenseLink() {
   return (
     <Button variant='outline' size='sm' asChild>
       <Link to='/crag-subscription'>{VIEW_TITLES['crag-subscription']}</Link>
@@ -175,7 +175,7 @@ export function CragLicenseEditor({
       <div className='flex flex-wrap items-center justify-between gap-2'>
         <h4 className='text-sm font-medium'>本槽 CRAG 授权</h4>
         <div className='flex gap-2'>
-          <CragShopLink />
+          <CragLicenseLink />
           <Button
             type='button'
             variant='ghost'

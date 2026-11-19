@@ -102,7 +102,7 @@ export function CragHostSubscription({ vmId }: { vmId: string }) {
       <p className='text-sm text-muted-foreground'>
         {pending
           ? '上次订阅变更尚未同步。已在运行的槽不受影响；请点「继续同步」完成后，再进行新的绑定或兑换。'
-          : '切换到 CRAG 内核不占槽位。只有绑定订阅且正在运行调度的 CRAG 槽计入使用中的槽位；本机与集群的 Docker、KVM 槽共用同一份充值可用槽位，用满后继续充值即可。绑定不会自动启动或重启槽位。'}
+          : '切换到 CRAG 内核不占槽位。只有绑定订阅且正在运行调度的 CRAG 槽计入使用中的槽位；本机与集群的 Docker、KVM 槽共用同一份充值可用槽位。绑定不会自动启动或重启槽位。'}
       </p>
       {status?.state === 'active' ? (
         <Button
