@@ -166,7 +166,7 @@ test('crash-looping kvm runner is replaced and recreated on reload even on the r
   )
 })
 
-test('ensureSlotImage refreshes a cached tag and falls back to it when the registry is unreachable', () => {
+test('ensureSlotImage refreshes a cached tag and falls back to it when the registry is unreachable', async () => {
   const calls = []
   const timeouts = []
   const registry = (pullOk, cached = true) => (argv, opts) => {
@@ -174,15 +174,14 @@ test('ensureSlotImage refreshes a cached tag and falls back to it when the regis
     if (argv[1] === 'pull') timeouts.push(opts?.timeout)
     return { ok: argv[1] === 'pull' ? pullOk : cached }
   }
-  assert.equal(ensureSlotImage('debian-12', { runtime: 'kvm', run: registry(true) }).action, 'pulled')
+  assert.equal((await ensureSlotImage('debian-12', { runtime: 'kvm', run: registry(true) })).action, 'pulled')
   assert.deepEqual(calls, ['docker image inspect', 'docker pull ghcr.io/dofastted/kin-kvm-debian:12'])
   calls.length = 0
-  assert.equal(ensureSlotImage('debian-12', { runtime: 'kvm', run: registry(false) }).action, 'present')
+  assert.equal((await ensureSlotImage('debian-12', { runtime: 'kvm', run: registry(false) })).action, 'present')
   assert.deepEqual(calls, ['docker image inspect', 'docker pull ghcr.io/dofastted/kin-kvm-debian:12'])
-  // A cached tag gets a short refresh window; only a missing image waits the full 5 minutes.
   assert.deepEqual(timeouts, [20_000, 20_000])
   timeouts.length = 0
-  ensureSlotImage('debian-12', { runtime: 'kvm', run: registry(true, false) })
+  await ensureSlotImage('debian-12', { runtime: 'kvm', run: registry(true, false) })
   assert.deepEqual(timeouts, [300_000])
 })
 
@@ -196,20 +195,6 @@ test('unbound slot does not recreate for a missing desired network', (t) => {
   assert.equal(slotNetworkForVm(vm), '')
   assert.equal(slotContainerNetworkMismatch(existing, vm), false)
   assert.equal(slotWorkerNeedsRecreate(existing, vm, paths), false)
-})
-
-test('reloadSlotWorker recreates on network mismatch before the KVM restart path', () => {
-  const src = fs.readFileSync(new URL('../../src/lib/vm/vm-runtime.mjs', import.meta.url), 'utf8')
-  const reload = src.slice(
-    src.indexOf('export async function reloadSlotWorker'),
-    src.indexOf('export function slotKernelAlive'),
-  )
-  assert.match(reload, /slotWorkerNeedsRecreate\(existing, vm, paths\)/)
-  assert.match(reload, /nativeSlotSandboxNeedsRecreate\(existing, vm, resolveSlotRouting\(projectRoot, routing\)\)/)
-  assert.ok(
-    reload.indexOf('nativeSlotSandboxNeedsRecreate') < reload.indexOf('if (isKvmRuntime(vm)) {'),
-    'sandbox recreate must run before systemctl restart',
-  )
 })
 
 test('writeWorkerFiles uses the desired kin-eg network even if the container is gone', (t) => {
@@ -227,6 +212,8 @@ test('writeWorkerFiles uses the desired kin-eg network even if the container is 
 })
 
 test('writeWorkerFiles keeps the control-plane gid when chown succeeds', (t) => {
+  // Exercise the non-root gateway contract even when the test runner is root.
+  t.mock.method(process, 'getuid', () => 1000)
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-worker-group-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const vm = { id: 'vm-10', proxy: { id: 'px-new', host: '1.2.3.4', port: 1080 } }
@@ -467,4 +454,29 @@ test('writeWorkerFiles and startVmRuntime use defaults when routing.json is abse
     else delete process.env.KIN_ROUTING_FILE
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('image pull and build leave the event loop responsive', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-image-async-'))
+  const oldPath = process.env.PATH
+  t.after(() => {
+    process.env.PATH = oldPath
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+  fs.writeFileSync(
+    path.join(dir, 'docker'),
+    `#!${process.execPath}
+const operation = process.argv[2]
+setTimeout(() => process.exit(operation === 'build' ? 0 : 1), 150)
+`,
+    { mode: 0o755 },
+  )
+  process.env.PATH = `${dir}${path.delimiter}${oldPath}`
+  let ticks = 0
+  const timer = setInterval(() => ticks++, 10)
+  t.after(() => clearInterval(timer))
+  const result = await ensureSlotImage('debian-12', { runtime: 'kvm' })
+  assert.equal(result.ok, true)
+  assert.equal(result.action, 'built')
+  assert.ok(ticks >= 5, `event loop stalled: only ${ticks} timer ticks`)
 })

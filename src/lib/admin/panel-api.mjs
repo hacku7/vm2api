@@ -6,10 +6,12 @@
  *   { ok: false, error: { type, code, message, ... } }
  */
 
+import { hostMemoryPressureOf, LOCAL_HOST_KEY } from '../cluster/host-memory-pressure.mjs'
 import { THINKING_DISPLAY_MODES } from '../protocol/thinking.mjs'
 import { normalizeRedaction } from '../redaction/policy.mjs'
 import { redactionStatus } from '../redaction/runtime.mjs'
 import { readSlotProcessStatus } from '../vm/slot-process-status.mjs'
+import { openaiUsageAccountId } from '../vm/codex-slot.mjs'
 import os from 'node:os'
 import { usagePoolEnabled, usageRead } from '../db/sqlite-pool.mjs'
 import path from 'node:path'
@@ -56,7 +58,7 @@ import { lastClosedWindow } from '../pool/window-history.mjs'
 import { hardBlockOf } from '../pool/rate-limit-service.mjs'
 import { unitCircuit } from '../pool/unit-circuit.mjs'
 import { accountIdOf, normalizePoolRouting } from '../pool/pool-scheduler.mjs'
-import { codexMaxSessions } from '../pool/codex-slot-pool.mjs'
+import { codexMaxSessions, codexScheduleLevel } from '../pool/codex-slot-pool.mjs'
 import { resolveCredentialScheduleLevel } from '../pool/credential-weight.mjs'
 import { activeHoursZoneOf, evaluateActiveHours } from '../pool/active-hours.mjs'
 import {
@@ -103,7 +105,7 @@ import { effectiveOpenAIPolicy, normalizeOpenAIQuotaPolicy } from '../pool/opena
 import { openAIRuntimeSignals } from '../pool/openai-account-runtime.mjs'
 import { normalizeVmConfig, memoryMiB } from '../vm/machine-spec.mjs'
 import { runtimeKind } from '../vm/runtime-kind.mjs'
-import { telemetryUploadInterval } from '../vm/native-telemetry.mjs'
+import { telemetryDefaultEnabled, telemetryUploadInterval } from '../vm/native-telemetry.mjs'
 
 export function ok(data, meta) {
   const out = { ok: true, data }
@@ -688,11 +690,12 @@ export async function buildDashboard({
     vms,
     (() => {
       try {
-        return attachBillingMeta(panelBillingStats(requestLog, accountQuota, vms), snap.accounts || [])
+        return panelBillingStats(requestLog, accountQuota, vms)
       } catch {
         return null
       }
     })(),
+    snap.accounts || [],
   )
 
   let dbTotals = null
@@ -819,11 +822,12 @@ export async function buildVmList({
     vms,
     (() => {
       try {
-        return attachBillingMeta(panelBillingStats(requestLog, accountQuota, vms), accounts)
+        return panelBillingStats(requestLog, accountQuota, vms)
       } catch {
         return null
       }
     })(),
+    accounts,
   )
   return ok({
     items: vms,
@@ -886,6 +890,9 @@ export async function buildVmDetail({
   const cost = lookupBilling(indexBillingAccounts(billing), acc || summary)
   const gpt = isCodexVm(vm)
   applyCostFields(summary, cost, { coveredSince: billing?.log_coverage_start })
+  if (billing?.lifetime_accounts) {
+    applyLifetimeUsage(summary, new Map(billing.lifetime_accounts.map((row) => [row.account_id, row])))
+  }
   const detail = buildAccountBilling(cost, billing, {
     vmId: summary.id,
     accountId: acc?.account_id || summary.account_uuid,
@@ -918,7 +925,9 @@ export async function buildVmDetail({
       }
     }
   }
-  const processStatus = gpt ? null : await slotProcessStatus({ projectRoot: cfg.paths.project, vm })
+  const processStatus = gpt
+    ? null
+    : await slotProcessStatus({ projectRoot: cfg.paths.project, vm, routing: routingConfig })
   const activeEngine = gpt ? null : rustHealth?.reachable ? 'rust' : null
   return ok({
     vm: summary,
@@ -1551,7 +1560,10 @@ export function buildRouting({ routingConfig, stickyRouter }) {
     usage_probe: normalizeUsageProbeConfig(routingConfig?.usage_probe),
     notify: publicNotifyConfig(routingConfig?.notify),
     vm: normalizeVmConfig(routingConfig?.vm),
-    telemetry: { upload_interval_seconds: telemetryUploadInterval(routingConfig) },
+    telemetry: {
+      upload_interval_seconds: telemetryUploadInterval(routingConfig),
+      default_enabled: telemetryDefaultEnabled(routingConfig),
+    },
     redaction: normalizeRedaction(routingConfig?.redaction),
     redaction_runtime: redactionStatus(),
     sessions: stickyRouter.stats(),
@@ -1599,11 +1611,12 @@ export async function snapshotAccountPool({
     vms,
     (() => {
       try {
-        return attachBillingMeta(panelBillingStats(requestLog, accountQuota, vms), accounts)
+        return panelBillingStats(requestLog, accountQuota, vms)
       } catch {
         return null
       }
     })(),
+    accounts,
   )
   let today = null
   try {
@@ -1637,7 +1650,19 @@ function hostStats() {
     heap_total: mem.heapTotal,
     uptime: os.uptime(),
     proc_uptime: process.uptime(),
+    memory_pressure: hostMemoryPressureOf(LOCAL_HOST_KEY),
   }
+}
+
+/** The 'usage credits required' Fable marker while its routing block lasts. */
+function activeFableCreditsRequired(unified, now = Date.now()) {
+  const mark = unified?.fable_credits_required
+  if (!mark) return null
+  const until = Date.parse(mark.until || '')
+  if (!Number.isFinite(until) || until <= now) return null
+  const deniedUntil = Number(unified.model_denied_until?.[mark.model]) || 0
+  if (deniedUntil <= now) return null
+  return { model: mark.model || null, at: mark.at || null, until: mark.until }
 }
 
 export function quotaFromAccount(acc, quotaConfig) {
@@ -1692,6 +1717,7 @@ export function quotaFromAccount(acc, quotaConfig) {
     account_tier: u.account_tier || null,
     account_tier_source: u.account_tier_source || null,
     usage_has_fable: u.usage_has_fable ?? null,
+    fable_credits_required: activeFableCreditsRequired(u),
   }
   const cfg = weeklySplitConfig(quotaConfig || {})
   const split = publicWeeklySplit(
@@ -1860,11 +1886,10 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     vmQuotaConfig,
   )
   const fablePool = fablePoolFields(acc, runtime, extras.pool || {}, extras.routingConfig || {}, v)
-  const scheduleLevel = resolveCredentialScheduleLevel({
-    manualLevel: v.schedule_level_manual,
-    unified: acc?.unified || {},
-  })
   const isCodex = isCodexVm(v)
+  const scheduleLevel = isCodex
+    ? codexScheduleLevel(v)
+    : resolveCredentialScheduleLevel({ manualLevel: v.schedule_level_manual, unified: acc?.unified || {} })
   // OpenAI quota mirrors are observations; admission uses the current raw windows and policy.
   if (isCodex && isQuotaWindowReason(v.temp_unschedulable_reason)) {
     v = { ...v, temp_unschedulable_until: null, temp_unschedulable_reason: null }
@@ -2047,6 +2072,7 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     has_token: hasToken,
     expires_at: expiresAt,
     oauth_source: v.oauth_source || null,
+    oauth_registration: v.oauth_registration || null,
     credential_mode: v.credential_mode || v.claude?.mode || 'oauth',
     auth_scheme: v.auth_scheme || v.claude?.auth_scheme || null,
     can_claude_reset: isCodex ? false : v.can_claude_reset === true,
@@ -2147,6 +2173,9 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     subscription_type: isCodex ? null : v.subscription_type || null,
     rate_limit_tier: isCodex ? null : v.rate_limit_tier || null,
     usage_has_fable: isCodex ? null : q.usage_has_fable,
+    fable_credits_required: isCodex ? null : q.fable_credits_required || null,
+    // pool.fable_requires_max: this slot never gets Fable because it is not Max.
+    fable_requires_max: !isCodex && extras.routingConfig?.pool?.fable_requires_max === true && tierKey !== 'max',
     availability,
     cred_status: credStatusFromAvailability(availability),
     cooldown_until: Number(restrictionUntil) > Date.now() ? Number(restrictionUntil) : null,
@@ -2474,13 +2503,21 @@ function panelBillingStats(requestLog, accountQuota, vms) {
   return requestLog.billingStats({ accountWindows: accountWindowsForBilling(accountQuota, vms) })
 }
 
-function stampVmBilling(vms, billing) {
+function applyLifetimeUsage(vm, index) {
+  const key = vm.has_token ? (isCodexVm(vm) ? openaiUsageAccountId(vm.org_uuid) : vm.account_uuid) : null
+  const row = key ? index.get(key) : null
+  vm.lifetime_usage = { cost: Number(row?.total_cost || 0), tokens: Number(row?.total_tokens || 0) }
+}
+
+function stampVmBilling(vms, billing, accounts) {
   if (!billing) return null
   const index = indexBillingAccounts(billing)
+  const lifetime = billing.lifetime_accounts && new Map(billing.lifetime_accounts.map((row) => [row.account_id, row]))
   for (const vm of vms || []) {
     applyCostFields(vm, lookupBilling(index, vm), { coveredSince: billing.log_coverage_start })
+    if (lifetime) applyLifetimeUsage(vm, lifetime)
   }
-  return billing
+  return attachBillingMeta(billing, accounts)
 }
 
 function cacheCostOf(row) {
@@ -2541,6 +2578,7 @@ function applyCostFields(target, cost, { coveredSince = null } = {}) {
   target.window_7d_success = cost?.window_7d_success || 0
   target.window_7d_errors = cost?.window_7d_errors || 0
   target.window_7d_tokens = cost?.window_7d_tokens || 0
+  target.health_24h = Array.isArray(cost?.health_24h) ? cost.health_24h : null
   Object.assign(target, windowEstimates(target, cost, coveredSince, isCodexVm(target)))
 }
 

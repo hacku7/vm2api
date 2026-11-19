@@ -13,7 +13,11 @@ import {
   Undo2,
   UserRoundPlus,
 } from 'lucide-react'
-import { credTypeLabel, credTypeOf } from '@/lib/cred-type'
+import {
+  credentialRegistrationOf,
+  credTypeLabel,
+  credTypeOf,
+} from '@/lib/cred-type'
 import { fmtExpiresAt, fmtNum, fmtUsd } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { compactEmail, isCodexVm, slotNameLabel } from '@/lib/vm-kind'
@@ -25,6 +29,7 @@ import {
   restrictionCopy,
   seatTitle,
   vmRunning,
+  vmRequestingCount,
 } from '@/lib/vm-status'
 import { fmtHitPct, vmTodayStats, vmWeekOutcome } from '@/lib/vm-usage'
 import { Button } from '@/components/ui/button'
@@ -100,7 +105,7 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
   const tier = claudeTier(vm)
   const blocked = refreshBlockedReason(vm)
   const restricted = restrictionTitle(vm)
-  const inflight = Number(vm.inflight) || 0
+  const requesting = vmRequestingCount(vm)
   const queued = Number(vm.queue_depth) || 0
   return (
     <>
@@ -114,7 +119,7 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
         ) : null}
         <span className='text-xs text-muted-foreground'>
           {vmRunning(vm) ? '运行' : '停止'}
-          {inflight > 0 ? ` · 在飞 ${inflight}` : ''}
+          {requesting > 0 ? ` · 请求中 ${requesting}` : ''}
         </span>
         {vm.seats_max != null ? (
           <span
@@ -187,9 +192,12 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
                 '-'
               ) : (
                 <span className='flex flex-wrap items-center gap-1.5'>
-                  <CredLaneChip vm={vm} />
+                  <CredLaneChip endpoint={credentialRegistrationOf(vm)} />
                   <span className='text-xs text-muted-foreground'>
-                    凭证 {credTypeLabel(credType)}
+                    凭证{' '}
+                    {credType === 'apikey'
+                      ? 'API Key'
+                      : credTypeLabel(credType)}
                   </span>
                   {codex ? <OpenaiPlanBadge vm={vm} /> : null}
                 </span>
